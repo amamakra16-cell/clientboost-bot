@@ -3,3 +3,5 @@ requests
 google-generativeai
 Pillow
 gunicorn
+gspread
+google-auth

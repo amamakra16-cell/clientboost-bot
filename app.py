@@ -1,6 +1,6 @@
 # ============================================================
-# ClientBoost.in — Instagram DM Automation Bot
-# With Google Gemini Vision — 100% Free Forever
+# ClientBoost.in — Instagram DM Audit Bot
+# Instagram DM Automation + Gemini Vision Audit + Human Handover
 # ============================================================
 
 from flask import Flask, request, jsonify
@@ -9,59 +9,94 @@ import os
 import time
 import json
 import threading
-import base64
-import google.generativeai as genai
-from PIL import Image
 import io
+from PIL import Image
+import google.generativeai as genai
 
 app = Flask(__name__)
 
 # ============================================================
 # ENVIRONMENT VARIABLES
-# Set all of these in Render dashboard
 # ============================================================
+
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "clientboost2024")
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GRAPH_API_VERSION = os.environ.get("GRAPH_API_VERSION", "v21.0")
 
-# Configure Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+# Gemini fallback model setup.
+# Render can optionally use:
+# GEMINI_MODELS = gemini-2.5-flash,gemini-2.0-flash
+model_env = os.environ.get("GEMINI_MODELS", "").strip()
+single_model_env = os.environ.get("GEMINI_MODEL", "").strip()
+
+if model_env:
+    raw_models = model_env
+elif single_model_env:
+    raw_models = f"{single_model_env},gemini-2.5-flash,gemini-2.0-flash"
+else:
+    raw_models = "gemini-2.5-flash,gemini-2.0-flash"
+
+GEMINI_MODELS = []
+for model_name in raw_models.split(","):
+    model_name = model_name.strip()
+    if model_name and model_name not in GEMINI_MODELS:
+        GEMINI_MODELS.append(model_name)
+
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 # ============================================================
-# PERSISTENT STATE STORAGE
+# FILE STORAGE
+# Free setup uses local JSON files.
+# Good for testing and early launch.
 # ============================================================
+
 STATE_FILE = "user_states.json"
 COOLDOWN_FILE = "user_cooldowns.json"
 
+# Used to ignore echo messages created by our own bot replies.
+# This prevents the bot from accidentally activating handover
+# because of its own messages.
+recent_bot_sends = {}
+
+
 def load_json(filename):
     try:
-        with open(filename, "r") as f:
-            return json.load(f)
+        with open(filename, "r", encoding="utf-8") as file:
+            return json.load(file)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
+
 def save_json(filename, data):
     try:
-        with open(filename, "w") as f:
-            json.dump(data, f)
-    except Exception as e:
-        print(f"❌ Failed to save {filename}: {e}")
+        with open(filename, "w", encoding="utf-8") as file:
+            json.dump(data, file, ensure_ascii=False, indent=2)
+    except Exception as error:
+        print(f"Failed to save {filename}: {error}")
+
 
 user_states = load_json(STATE_FILE)
 user_cooldowns = load_json(COOLDOWN_FILE)
 
+# ============================================================
+# INSTAGRAM DM SENDER
+# ============================================================
 
-# ============================================================
-# SEND DM
-# ============================================================
 def send_dm(recipient_id, message):
-    url = "https://graph.facebook.com/v21.0/me/messages"
+    if not PAGE_ACCESS_TOKEN:
+        print("PAGE_ACCESS_TOKEN is missing.")
+        return {"error": "PAGE_ACCESS_TOKEN missing"}
+
+    url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/me/messages"
+
     payload = {
         "recipient": {"id": recipient_id},
         "message": {"text": message},
         "messaging_type": "RESPONSE"
     }
+
     params = {"access_token": PAGE_ACCESS_TOKEN}
     headers = {"Content-Type": "application/json"}
 
@@ -71,155 +106,250 @@ def send_dm(recipient_id, message):
             json=payload,
             params=params,
             headers=headers,
-            timeout=10
+            timeout=15
         )
+
+        print("DM send status:", response.status_code, response.text[:500])
         response.raise_for_status()
+
+        # Mark this user as recently messaged by bot.
+        recent_bot_sends[str(recipient_id)] = time.time()
+
         return response.json()
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Failed to send DM to {recipient_id}: {e}")
-        return {"error": str(e)}
 
+    except requests.exceptions.RequestException as error:
+        print(f"Failed to send DM to {recipient_id}: {error}")
+        return {"error": str(error)}
 
 # ============================================================
-# DOWNLOAD IMAGE FROM INSTAGRAM
+# IMAGE DOWNLOAD
 # ============================================================
+
 def download_image(image_url):
     try:
         headers = {"Authorization": f"Bearer {PAGE_ACCESS_TOKEN}"}
+
         response = requests.get(
             image_url,
             headers=headers,
-            timeout=15
+            timeout=20
         )
+
         response.raise_for_status()
-        # Convert to PIL Image for Gemini
+
         image = Image.open(io.BytesIO(response.content))
         return image
-    except Exception as e:
-        print(f"❌ Failed to download image: {e}")
+
+    except Exception as error:
+        print(f"Failed to download image: {error}")
         return None
 
+# ============================================================
+# GEMINI FALLBACK GENERATOR
+# ============================================================
+
+def generate_text_with_fallback(contents):
+    last_error = None
+
+    for model_name in GEMINI_MODELS:
+        try:
+            print(f"Trying Gemini model: {model_name}")
+
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(contents)
+
+            try:
+                response_text = response.text
+            except Exception as text_error:
+                last_error = text_error
+                print(f"Gemini response had no readable text ({model_name}): {text_error}")
+                continue
+
+            if response_text and response_text.strip():
+                return response_text.strip()
+
+            last_error = "Empty Gemini response"
+            print(f"Gemini model returned empty text: {model_name}")
+
+        except Exception as error:
+            last_error = error
+            print(f"Gemini model failed ({model_name}): {error}")
+
+    print(f"All Gemini models failed: {last_error}")
+    return None
 
 # ============================================================
-# GEMINI VISION ANALYSER
-# 100% Free — Analyses screenshot and returns full audit
+# GEMINI AUDIT ANALYSER
 # ============================================================
-def analyse_screenshot_with_gemini(image, name, btype, location):
 
-    prompt = f"""You are an expert Instagram growth consultant working for ClientBoost.in.
+def analyse_screenshot_with_gemini(image, name, business_type, location):
+    prompt = f"""
+You are the senior Instagram growth auditor for ClientBoost, a global digital growth agency.
 
-A business owner has shared a screenshot of their Instagram profile for a free audit.
+ClientBoost helps businesses grow through:
+- Strategy
+- SEO
+- Ads
+- Content
+- Social media
+- Web
+- Lead generation
+- AI automation
+- Conversion systems
 
-Their details:
+A business owner requested a free Instagram audit.
+
+Business details:
 - Business Name: {name}
-- Business Type: {btype}
-- Location: {location}
+- Business Type: {business_type}
+- City/Country: {location}
 
-Carefully analyse everything visible in the screenshot:
-- Name field and username
-- Bio text and structure
-- Profile picture quality
-- Follower count and following count
+Analyse the Instagram profile screenshot carefully.
+
+Check only what is visible:
+- Username
+- Name field
+- Bio clarity
+- Profile picture
+- Follower/following count
 - Number of posts
-- Story Highlights — covers, labels, quantity
-- Post grid — visible posts, visual consistency, theme, quality
-- Any visible captions or engagement numbers
-- Overall brand feel and professionalism
-
-Now write a detailed fully personalised Instagram Growth Audit.
-
-Use EXACTLY this format and structure:
-
-━━━━━━━━━━━━━━━━━━━━━━
-📋 SECTION 1 — PROFILE AUDIT
-
-[Write specific observations about THEIR actual bio, name field, profile picture and highlights]
-[Give specific improvements with examples using their actual business name and location]
-
-Profile Score: X / 10
-[Justify the score based on what you actually saw]
-
-Top Fix: [One specific actionable fix for their actual profile]
-
-━━━━━━━━━━━━━━━━━━━━━━
-📸 SECTION 2 — CONTENT AUDIT
-
-[Write specific observations about THEIR actual posts and grid]
-[Comment on quality, themes and variety based on what is visible]
-
-Content Score: X / 10
-[Justify based on what you saw]
-
-Top Fix: [One specific actionable fix for their content]
-
-━━━━━━━━━━━━━━━━━━━━━━
-📍 SECTION 3 — LOCAL REACH AUDIT
-
-[Based on their bio and visible captions assess local SEO and hashtag strategy]
-[Give specific hashtag suggestions using their actual business type and location]
-
-Reach Score: X / 10
-
-Top Fix: [One specific actionable fix for their reach]
-
-━━━━━━━━━━━━━━━━━━━━━━
-💬 SECTION 4 — ENGAGEMENT AUDIT
-
-[Based on visible likes, comments and post frequency assess engagement]
-[Give specific advice for their type of business]
-
-Engagement Score: X / 10
-
-Top Fix: [One specific actionable fix for engagement]
-
-━━━━━━━━━━━━━━━━━━━━━━
-🏆 OVERALL SCORECARD
-
-Profile      →  X / 10
-Content      →  X / 10
-Reach        →  X / 10
-Engagement   →  X / 10
-━━━━━━━━━━━━━━━━━━━━━━
-TOTAL        →  XX / 40
-
-Rating: [One honest line rating]
-
-━━━━━━━━━━━━━━━━━━━━━━
-📅 YOUR 4-WEEK ACTION PLAN
-
-Week 1: [Specific to their actual profile issues you saw]
-Week 2: [Specific to their actual content issues you saw]
-Week 3: [Specific to their engagement issues]
-Week 4: [Review and scale what worked]
+- Story highlights
+- Highlight names and covers
+- Visible post grid
+- Visual consistency
+- Offer clarity
+- CTA clarity
+- Trust signals
+- Lead flow
 
 Important rules:
-- Be honest and specific
-- Reference things you actually saw in the screenshot
-- Never be generic
-- Every single line must feel written specifically for {name}
-- If something looks good — say so
-- If something is bad — be direct about it"""
+- Do not invent fake data.
+- Do not claim guaranteed results.
+- Do not sound generic.
+- Do not overpraise.
+- Be direct, useful and professional.
+- If something is not visible, say it is not visible.
+- Keep the audit practical and easy to act on.
+
+Write the audit in this exact structure:
+
+━━━━━━━━━━━━━━━━━━━━━━
+CLIENTBOOST FREE INSTAGRAM AUDIT
+━━━━━━━━━━━━━━━━━━━━━━
+
+1. PROFILE SCORE
+Score: X/10
+
+What is working:
+- [specific point from screenshot]
+
+What needs fixing:
+- [specific point from screenshot]
+
+Top Fix:
+[one clear action]
+
+━━━━━━━━━━━━━━━━━━━━━━
+2. BIO FIXES
+
+Current issue:
+[specific issue]
+
+Recommended bio:
+[write a better bio for this business]
+
+Why this works:
+[short reason]
+
+━━━━━━━━━━━━━━━━━━━━━━
+3. CONTENT FIXES
+
+What is working:
+- [specific point]
+
+What needs fixing:
+- [specific point]
+
+3 content ideas for this business:
+- [idea 1]
+- [idea 2]
+- [idea 3]
+
+━━━━━━━━━━━━━━━━━━━━━━
+4. HIGHLIGHT FIXES
+
+Current issue:
+[specific issue]
+
+Recommended highlights:
+- Services
+- Results / Proof
+- How It Works
+- FAQ
+- Contact / Book Now
+
+Top Fix:
+[one clear action]
+
+━━━━━━━━━━━━━━━━━━━━━━
+5. LEAD FLOW FIXES
+
+Current issue:
+[specific issue]
+
+Fix:
+[how to make the profile convert better]
+
+━━━━━━━━━━━━━━━━━━━━━━
+6. 7-DAY ACTION PLAN
+
+Day 1:
+[task]
+
+Day 2:
+[task]
+
+Day 3:
+[task]
+
+Day 4:
+[task]
+
+Day 5:
+[task]
+
+Day 6:
+[task]
+
+Day 7:
+[task]
+
+━━━━━━━━━━━━━━━━━━━━━━
+7. FINAL NOTE
+
+End with this soft CTA:
+"If you want ClientBoost to help implement these fixes, reply INTERESTED and our team will guide you."
+"""
 
     try:
-        response = model.generate_content([prompt, image])
-        return response.text
+        return generate_text_with_fallback([prompt, image])
 
-    except Exception as e:
-        print(f"❌ Gemini Vision error: {e}")
+    except Exception as error:
+        print(f"Gemini Vision error: {error}")
         return None
 
+# ============================================================
+# SPLIT LONG MESSAGE FOR INSTAGRAM DM
+# ============================================================
 
-# ============================================================
-# SPLIT AUDIT INTO PARTS FOR SENDING
-# Instagram DM limit is 1000 chars
-# ============================================================
-def split_audit_into_parts(audit_text):
+def split_message(text, limit=900):
     parts = []
     current = ""
 
-    for line in audit_text.split("\n"):
-        if "━━━" in line and current.strip():
-            parts.append(current.strip())
+    for line in text.split("\n"):
+        if len(current) + len(line) + 1 > limit:
+            if current.strip():
+                parts.append(current.strip())
             current = line + "\n"
         else:
             current += line + "\n"
@@ -227,92 +357,129 @@ def split_audit_into_parts(audit_text):
     if current.strip():
         parts.append(current.strip())
 
-    # Handle any parts still over 900 chars
-    final_parts = []
-    for part in parts:
-        if len(part) <= 900:
-            final_parts.append(part)
-        else:
-            lines = part.split("\n")
-            chunk = ""
-            for line in lines:
-                if len(chunk) + len(line) + 1 > 900:
-                    if chunk.strip():
-                        final_parts.append(chunk.strip())
-                    chunk = line + "\n"
-                else:
-                    chunk += line + "\n"
-            if chunk.strip():
-                final_parts.append(chunk.strip())
-
-    return final_parts
-
+    return parts
 
 # ============================================================
-# FULL AUDIT SENDER
+# SEND FULL AUDIT
 # ============================================================
-def send_full_audit(sender_id, name, btype, location, image):
 
-    send_dm(sender_id,
-        "Screenshot received! 🎯\n\n"
-        "Analysing your Instagram profile using AI now...\n\n"
-        "This takes about 20 to 30 seconds ⏳"
+def send_full_audit(sender_id, name, business_type, location, image):
+    send_dm(
+        sender_id,
+        "Screenshot received.\n\n"
+        "Analysing your Instagram profile now. This usually takes 20–30 seconds."
     )
 
-    # Run Gemini analysis
-    audit_text = analyse_screenshot_with_gemini(image, name, btype, location)
+    audit_text = analyse_screenshot_with_gemini(
+        image=image,
+        name=name,
+        business_type=business_type,
+        location=location
+    )
 
     if not audit_text:
-        send_dm(sender_id,
-            "Sorry, something went wrong while analysing your screenshot. 😔\n\n"
-            "Please try sending the screenshot again."
+        send_dm(
+            sender_id,
+            "Sorry, the AI analysis could not complete right now.\n\n"
+            "Please resend the screenshot once, or try again in a few minutes."
         )
         return
 
-    # Send header
-    send_dm(sender_id,
-        f"🎯 FREE INSTAGRAM GROWTH AUDIT\n"
-        f"by ClientBoost.in\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    intro = (
+        "Your free ClientBoost Instagram audit is ready.\n\n"
         f"Business: {name}\n"
-        f"Type: {btype}\n"
+        f"Type: {business_type}\n"
         f"Location: {location}\n\n"
-        f"Here is your fully personalised audit 👇"
+        "Here are the fixes:"
     )
 
+    send_dm(sender_id, intro)
     time.sleep(1)
 
-    # Send audit in parts
-    parts = split_audit_into_parts(audit_text)
-    for part in parts:
+    for part in split_message(audit_text):
         send_dm(sender_id, part)
         time.sleep(1.2)
 
-    # Send closing CTA
-    time.sleep(1)
-    send_dm(sender_id,
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🚀 WANT HELP IMPLEMENTING THIS?\n\n"
-        f"{name} has real growth potential on Instagram.\n"
-        f"The audit shows exactly what needs fixing.\n\n"
-        f"If you would like ClientBoost to handle all of this for you —\n"
-        f"content, strategy and growth in {location} —\n"
-        f"reply INTERESTED and we will take it from there.\n\n"
-        f"No pressure. Just a conversation. 🤝\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"ClientBoost.in | Instagram Growth for Local Businesses"
+    send_dm(
+        sender_id,
+        "If you want ClientBoost to help implement these fixes, reply INTERESTED and our team will guide you."
     )
 
+# ============================================================
+# USER STATE HELPERS
+# ============================================================
+
+def get_state(sender_id):
+    sender_id = str(sender_id)
+
+    if sender_id not in user_states:
+        user_states[sender_id] = {
+            "step": "new",
+            "data": {},
+            "handover": False
+        }
+
+    if "handover" not in user_states[sender_id]:
+        user_states[sender_id]["handover"] = False
+
+    if "data" not in user_states[sender_id]:
+        user_states[sender_id]["data"] = {}
+
+    if "step" not in user_states[sender_id]:
+        user_states[sender_id]["step"] = "new"
+
+    return user_states[sender_id]
+
+
+def save_states():
+    save_json(STATE_FILE, user_states)
+
+
+def activate_handover(sender_id):
+    sender_id = str(sender_id)
+    state = get_state(sender_id)
+    state["handover"] = True
+    state["step"] = "human_handover"
+    save_states()
+
+
+def reset_user(sender_id):
+    sender_id = str(sender_id)
+
+    user_states[sender_id] = {
+        "step": "new",
+        "data": {},
+        "handover": False
+    }
+
+    # Reset cooldown too, useful during testing.
+    if sender_id in user_cooldowns:
+        del user_cooldowns[sender_id]
+        save_json(COOLDOWN_FILE, user_cooldowns)
+
+    save_states()
+
+
+def is_recent_bot_echo(user_id, seconds=60):
+    user_id = str(user_id)
+
+    last_sent = recent_bot_sends.get(user_id)
+
+    if not last_sent:
+        return False
+
+    return (time.time() - last_sent) <= seconds
 
 # ============================================================
-# CONVERSATION HANDLER
+# MESSAGE HANDLER
 # ============================================================
+
 def handle_message(sender_id, message_obj):
+    sender_id = str(sender_id)
 
-    text = message_obj.get("text", "").lower().strip()
     raw_text = message_obj.get("text", "").strip()
+    text = raw_text.lower()
 
-    # Check for image attachment
     attachments = message_obj.get("attachments", [])
     image_url = None
 
@@ -321,204 +488,313 @@ def handle_message(sender_id, message_obj):
             image_url = attachment.get("payload", {}).get("url")
             break
 
-    # Initialise state if new user
-    if sender_id not in user_states:
-        user_states[sender_id] = {"step": "new", "data": {}}
+    state = get_state(sender_id)
+    step = state.get("step", "new")
+    data = state.get("data", {})
 
-    state = user_states[sender_id]
-    step = state["step"]
-
-    # ── RESET ───────────────────────────────────────────────
+    # Reset should always work.
     if text in ["reset", "restart", "start over", "start again"]:
-        user_states[sender_id] = {"step": "new", "data": {}}
-        save_json(STATE_FILE, user_states)
-        send_dm(sender_id,
-            "No problem! 🔄\n\n"
-            "Type GROWTH whenever you are ready."
+        reset_user(sender_id)
+
+        send_dm(
+            sender_id,
+            "Reset done.\n\n"
+            "Type GROWTH whenever you are ready for your free Instagram audit."
         )
         return
 
-    # ── IMAGE RECEIVED AT RIGHT STEP ────────────────────────
+    # If human handover is active, bot stays silent.
+    if state.get("handover") is True:
+        print(f"Human handover active for {sender_id}. Bot ignored message.")
+        return
+
+    # Stop / opt-out.
+    if text in ["stop", "cancel", "unsubscribe"]:
+        activate_handover(sender_id)
+
+        send_dm(
+            sender_id,
+            "No problem. We will stop the automated messages here."
+        )
+        return
+
+    # Interested = handover to team.
+    if "interested" in text:
+        activate_handover(sender_id)
+
+        send_dm(
+            sender_id,
+            "Great. Our team will take it from here.\n\n"
+            "Please send your best WhatsApp number and a short note about what you want help with."
+        )
+        return
+
+    # Image received at correct step.
     if image_url and step == "ask_screenshot":
-
-        send_dm(sender_id, "Got your screenshot! 📸")
-
-        data = user_states[sender_id]["data"]
-
-        # Download image
         image = download_image(image_url)
 
         if not image:
-            send_dm(sender_id,
-                "Sorry, I could not download your screenshot. 😔\n\n"
-                "Please try sending it again."
+            send_dm(
+                sender_id,
+                "I could not download the screenshot.\n\n"
+                "Please send it again."
             )
             return
 
-        # Update cooldown
         user_cooldowns[sender_id] = time.time()
         save_json(COOLDOWN_FILE, user_cooldowns)
 
-        # Send full AI audit
         send_full_audit(
-            sender_id,
-            data["name"],
-            data["type"],
-            data["location"],
-            image
+            sender_id=sender_id,
+            name=data.get("name", "Your business"),
+            business_type=data.get("type", "Business"),
+            location=data.get("location", "Your location"),
+            image=image
         )
 
-        # Reset state
-        user_states[sender_id] = {"step": "new", "data": {}}
-        save_json(STATE_FILE, user_states)
+        user_states[sender_id] = {
+            "step": "new",
+            "data": {},
+            "handover": False
+        }
+        save_states()
         return
 
-    # ── IMAGE RECEIVED AT WRONG STEP ────────────────────────
+    # Image received too early.
     if image_url and step != "ask_screenshot":
-        send_dm(sender_id,
-            "Thanks for the image! 📸\n\n"
-            "Type GROWTH first to start your free audit "
-            "and I will ask for your screenshot at the right time. 🎯"
+        send_dm(
+            sender_id,
+            "Thanks for the image.\n\n"
+            "Type GROWTH first so I can start your free audit properly."
         )
         return
 
-    # ── TRIGGER: GROWTH ─────────────────────────────────────
+    # Start audit flow.
     if "growth" in text and step == "new":
-
         last_time = user_cooldowns.get(sender_id, 0)
+
         if time.time() - last_time < 86400:
-            send_dm(sender_id,
-                "Hey! 👋 You already received a free audit recently.\n\n"
-                "Your audit is valid for 30 days — work through the "
-                "action plan and you will start seeing results. 💪\n\n"
-                "Reply INTERESTED if you want our team to help you implement it."
+            send_dm(
+                sender_id,
+                "You already received a free audit recently.\n\n"
+                "Reply INTERESTED if you want ClientBoost to help implement the fixes."
             )
             return
 
-        send_dm(sender_id,
-            "Hey! 👋 Welcome to ClientBoost.\n\n"
-            "You are about to get a fully personalised Instagram "
-            "Growth Audit — analysed by AI based on your actual profile.\n\n"
-            "Just 3 quick questions first.\n\n"
-            "What is your business name? 🏪"
-        )
-        user_states[sender_id]["step"] = "ask_name"
-        save_json(STATE_FILE, user_states)
+        user_states[sender_id] = {
+            "step": "ask_name",
+            "data": {},
+            "handover": False
+        }
+        save_states()
 
-    # ── STEP 1: NAME ────────────────────────────────────────
-    elif step == "ask_name":
+        send_dm(
+            sender_id,
+            "Welcome to ClientBoost.\n\n"
+            "We will do a free Instagram audit for your business.\n\n"
+            "First, what is your business name?"
+        )
+        return
+
+    # Step 1: Business name.
+    if step == "ask_name":
         if len(raw_text) < 2:
-            send_dm(sender_id, "Please enter a valid business name. 🏪")
+            send_dm(sender_id, "Please send a valid business name.")
             return
 
-        user_states[sender_id]["data"]["name"] = raw_text
-        send_dm(sender_id,
-            f"Got it — {raw_text} ✅\n\n"
+        data["name"] = raw_text
+        state["data"] = data
+        state["step"] = "ask_type"
+        save_states()
+
+        send_dm(
+            sender_id,
+            f"Got it — {raw_text}.\n\n"
             "What type of business is it?\n\n"
-            "• Restaurant\n"
-            "• Cafe\n"
-            "• Salon\n"
-            "• Gym\n"
-            "• Boutique\n"
-            "• Clinic\n"
-            "• Other"
+            "Reply with one option:\n"
+            "1. Restaurant\n"
+            "2. Cafe\n"
+            "3. Salon\n"
+            "4. Gym\n"
+            "5. Boutique\n"
+            "6. Clinic\n"
+            "7. Real Estate\n"
+            "8. E-commerce\n"
+            "9. Personal Brand\n"
+            "10. Other"
         )
-        user_states[sender_id]["step"] = "ask_type"
-        save_json(STATE_FILE, user_states)
+        return
 
-    # ── STEP 2: TYPE ────────────────────────────────────────
-    elif step == "ask_type":
-        if len(raw_text) < 2:
-            send_dm(sender_id, "Please enter your business type. 🏷️")
+    # Step 2: Business type.
+    # If user selects Other, bot asks exact type.
+    if step == "ask_type":
+        if len(raw_text) < 1:
+            send_dm(sender_id, "Please send your business type.")
             return
 
-        user_states[sender_id]["data"]["type"] = raw_text
-        send_dm(sender_id,
-            f"{raw_text} — noted! ✅\n\n"
-            "Which city or area is your business in? 📍"
-        )
-        user_states[sender_id]["step"] = "ask_location"
-        save_json(STATE_FILE, user_states)
+        normalized = text.replace(".", "").strip()
 
-    # ── STEP 3: LOCATION ────────────────────────────────────
-    elif step == "ask_location":
-        if len(raw_text) < 2:
-            send_dm(sender_id, "Please enter your city or area. 📍")
+        type_map = {
+            "1": "Restaurant",
+            "restaurant": "Restaurant",
+            "2": "Cafe",
+            "cafe": "Cafe",
+            "coffee shop": "Cafe",
+            "3": "Salon",
+            "salon": "Salon",
+            "4": "Gym",
+            "gym": "Gym",
+            "fitness": "Gym",
+            "5": "Boutique",
+            "boutique": "Boutique",
+            "6": "Clinic",
+            "clinic": "Clinic",
+            "7": "Real Estate",
+            "real estate": "Real Estate",
+            "realestate": "Real Estate",
+            "realtor": "Real Estate",
+            "8": "E-commerce",
+            "ecommerce": "E-commerce",
+            "e-commerce": "E-commerce",
+            "online store": "E-commerce",
+            "9": "Personal Brand",
+            "personal brand": "Personal Brand",
+            "creator": "Personal Brand",
+            "influencer": "Personal Brand",
+            "10": "Other",
+            "other": "Other"
+        }
+
+        selected_type = type_map.get(normalized, raw_text)
+
+        if selected_type == "Other":
+            state["step"] = "ask_other_type"
+            save_states()
+
+            send_dm(
+                sender_id,
+                "No problem.\n\n"
+                "Please type your exact business type.\n\n"
+                "Example: dental clinic, car service, coaching, software company, interior design, etc."
+            )
             return
 
-        user_states[sender_id]["data"]["location"] = raw_text
-        send_dm(sender_id,
-            f"{raw_text} — perfect! ✅\n\n"
-            "Now the most important step 🎯\n\n"
-            "Please send a screenshot of your Instagram profile.\n\n"
+        data["type"] = selected_type
+        state["data"] = data
+        state["step"] = "ask_location"
+        save_states()
+
+        send_dm(
+            sender_id,
+            f"{selected_type} — noted.\n\n"
+            "Which city or country do you serve?"
+        )
+        return
+
+    # Step 2B: Exact business type after Other.
+    if step == "ask_other_type":
+        if len(raw_text) < 2:
+            send_dm(sender_id, "Please type your exact business type.")
+            return
+
+        data["type"] = raw_text
+        state["data"] = data
+        state["step"] = "ask_location"
+        save_states()
+
+        send_dm(
+            sender_id,
+            f"{raw_text} — noted.\n\n"
+            "Which city or country do you serve?"
+        )
+        return
+
+    # Step 3: Location.
+    if step == "ask_location":
+        if len(raw_text) < 2:
+            send_dm(sender_id, "Please send your city or country.")
+            return
+
+        data["location"] = raw_text
+        state["data"] = data
+        state["step"] = "ask_screenshot"
+        save_states()
+
+        send_dm(
+            sender_id,
+            f"{raw_text} — perfect.\n\n"
+            "Now send a screenshot of your Instagram profile.\n\n"
             "Make sure it shows:\n"
-            "• Your name and bio\n"
-            "• Your Story Highlights\n"
-            "• Your post grid\n"
-            "• Your follower count\n\n"
-            "Our AI will analyse your actual account and give you "
-            "a fully personalised audit — not a generic one. 📸\n\n"
-            "Send the screenshot whenever you are ready! 👇"
+            "- Your bio\n"
+            "- Story highlights\n"
+            "- Follower count\n"
+            "- First few posts\n\n"
+            "Once you send it, we will analyse your profile and send your audit."
         )
-        user_states[sender_id]["step"] = "ask_screenshot"
-        save_json(STATE_FILE, user_states)
+        return
 
-    # ── INTERESTED ───────────────────────────────────────────
-    elif "interested" in text:
-        send_dm(sender_id,
-            "That is great to hear! 🙌\n\n"
-            "Someone from the ClientBoost team will reach out to you "
-            "shortly to understand your business better.\n\n"
-            "Talk soon! 😊\n"
-            "— Team ClientBoost.in"
-        )
-
-    # ── FALLBACK ─────────────────────────────────────────────
-    else:
-        send_dm(sender_id,
-            "Hey! 👋 I am the ClientBoost audit assistant.\n\n"
-            "Type GROWTH to get your free personalised "
-            "Instagram audit powered by AI. 🎯"
-        )
-
+    # Default fallback.
+    send_dm(
+        sender_id,
+        "Hi. Type GROWTH to get your free Instagram audit from ClientBoost."
+    )
 
 # ============================================================
-# WEBHOOK VERIFICATION
+# WEBHOOK ROUTES
 # ============================================================
+
 @app.route("/webhook", methods=["GET"])
-def verify():
+def verify_webhook():
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
 
     if mode == "subscribe" and token == VERIFY_TOKEN:
-        print("✅ Webhook verified")
+        print("Webhook verified.")
         return challenge, 200
 
     return "Forbidden", 403
 
 
-# ============================================================
-# WEBHOOK RECEIVER
-# ============================================================
 @app.route("/webhook", methods=["POST"])
-def webhook():
+def receive_webhook():
     data = request.json
+    print("Webhook received:", json.dumps(data)[:1000])
 
     if data.get("object") == "instagram":
         for entry in data.get("entry", []):
             for event in entry.get("messaging", []):
                 sender_id = event.get("sender", {}).get("id")
+                recipient_id = event.get("recipient", {}).get("id")
                 message_obj = event.get("message", {})
-                is_echo = message_obj.get("is_echo", False)
 
-                has_text = bool(message_obj.get("text", ""))
+                if not sender_id:
+                    continue
+
+                # Echo messages can come from:
+                # 1. Our bot sending a DM through API
+                # 2. Your team manually replying from Instagram inbox
+                #
+                # If it is a recent bot echo, ignore it.
+                # If it is not a recent bot echo, treat it as team handover.
+                if message_obj.get("is_echo"):
+                    if recipient_id and is_recent_bot_echo(recipient_id):
+                        print(f"Ignored recent bot echo for {recipient_id}")
+                        continue
+
+                    if recipient_id:
+                        activate_handover(recipient_id)
+                        print(f"Human handover activated from echo for {recipient_id}")
+
+                    continue
+
+                has_text = bool(message_obj.get("text"))
                 has_image = any(
-                    a.get("type") == "image"
-                    for a in message_obj.get("attachments", [])
+                    attachment.get("type") == "image"
+                    for attachment in message_obj.get("attachments", [])
                 )
 
-                if sender_id and (has_text or has_image) and not is_echo:
+                if has_text or has_image:
                     thread = threading.Thread(
                         target=handle_message,
                         args=(sender_id, message_obj)
@@ -529,17 +805,14 @@ def webhook():
     return jsonify({"status": "ok"}), 200
 
 
-# ============================================================
-# HEALTH CHECK
-# ============================================================
 @app.route("/", methods=["GET"])
 def home():
-    return "ClientBoost Bot is running ✅", 200
-
+    return "ClientBoost Bot is running", 200
 
 # ============================================================
 # RUN
 # ============================================================
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)

@@ -1,6 +1,6 @@
 # ============================================================
-# ClientBoost.in — Instagram DM Audit + Conversion Engine
-# Instagram Audit Bot + Google Sheets CRM + Lead Conversion
+# ClientBoost.in — Instagram DM Audit + Lead Conversion Engine
+# Instagram DM Bot + Google Sheets CRM + Gemini Key Pool
 # ============================================================
 
 from flask import Flask, request, jsonify
@@ -34,7 +34,6 @@ GRAPH_API_VERSION = os.environ.get("GRAPH_API_VERSION", "v21.0")
 GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 
-# New key pools
 GEMINI_AUDIT_API_KEYS = [
     key.strip()
     for key in os.environ.get(
@@ -57,7 +56,7 @@ GEMINI_AUDIT_MODELS = [
     model.strip()
     for model in os.environ.get(
         "GEMINI_AUDIT_MODELS",
-        "gemini-2.5-flash,gemini-2.0-flash"
+        "gemini-2.5-flash-lite,gemini-2.0-flash,gemini-2.5-flash"
     ).split(",")
     if model.strip()
 ]
@@ -66,7 +65,7 @@ GEMINI_CONVERSION_MODELS = [
     model.strip()
     for model in os.environ.get(
         "GEMINI_CONVERSION_MODELS",
-        "gemini-2.5-flash,gemini-2.0-flash"
+        "gemini-2.5-flash-lite,gemini-2.0-flash"
     ).split(",")
     if model.strip()
 ]
@@ -74,6 +73,10 @@ GEMINI_CONVERSION_MODELS = [
 RETRY_INTERVAL_SECONDS = int(os.environ.get("RETRY_INTERVAL_SECONDS", "600"))
 KEY_COOLDOWN_SECONDS = int(os.environ.get("KEY_COOLDOWN_SECONDS", "900"))
 RETRY_SECRET = os.environ.get("RETRY_SECRET", "")
+ENABLE_BACKGROUND_RETRY = os.environ.get("ENABLE_BACKGROUND_RETRY", "true").lower() == "true"
+AUTO_HANDOVER_ON_ECHO = os.environ.get("AUTO_HANDOVER_ON_ECHO", "false").lower() == "true"
+
+MAX_CONVERSION_TURNS_BEFORE_CONTACT = int(os.environ.get("MAX_CONVERSION_TURNS_BEFORE_CONTACT", "2"))
 
 # ============================================================
 # GLOBALS
@@ -81,16 +84,18 @@ RETRY_SECRET = os.environ.get("RETRY_SECRET", "")
 
 sheet_lock = threading.Lock()
 gemini_lock = threading.Lock()
+user_locks_lock = threading.Lock()
 
 _gspread_client = None
 _workbook = None
 _ws_cache = {}
 
-# Used to ignore echo messages created by our own bot replies.
 recent_bot_sends = {}
-
-# Key cooldown memory. Sheets will also log API status.
 api_cooldowns = {}
+user_locks = {}
+seen_message_ids = {}
+
+background_retry_started = False
 
 # ============================================================
 # GOOGLE SHEETS HEADERS
@@ -194,10 +199,65 @@ def parse_iso(value):
 
 def seconds_since(value):
     parsed = parse_iso(value)
+
     if not parsed:
         return 999999999
 
     return (now_utc() - parsed).total_seconds()
+
+
+# ============================================================
+# BASIC TEXT HELPERS
+# ============================================================
+
+def normalize_text(text):
+    text = str(text or "").lower().strip()
+    text = text.replace("’", "'")
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def compact_text(text):
+    text = str(text or "").strip()
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    return text.strip()
+
+
+def is_truthy(value):
+    return str(value).strip().lower() in ["true", "yes", "1", "active"]
+
+
+def get_user_lock(sender_id):
+    sender_id = str(sender_id)
+
+    with user_locks_lock:
+        if sender_id not in user_locks:
+            user_locks[sender_id] = threading.Lock()
+
+        return user_locks[sender_id]
+
+
+def is_duplicate_message(mid):
+    if not mid:
+        return False
+
+    now_ts = time.time()
+
+    expired = [
+        saved_mid
+        for saved_mid, saved_time in seen_message_ids.items()
+        if now_ts - saved_time > 600
+    ]
+
+    for saved_mid in expired:
+        seen_message_ids.pop(saved_mid, None)
+
+    if mid in seen_message_ids:
+        return True
+
+    seen_message_ids[mid] = now_ts
+    return False
 
 
 # ============================================================
@@ -240,6 +300,21 @@ def get_workbook():
         return None
 
 
+def ensure_all_sheets():
+    workbook = _workbook
+
+    if not workbook:
+        return
+
+    for sheet_name, headers in SHEET_HEADERS.items():
+        try:
+            ws = workbook.worksheet(sheet_name)
+        except Exception:
+            ws = workbook.add_worksheet(title=sheet_name, rows=1000, cols=40)
+
+        ensure_headers(ws, headers)
+
+
 def get_ws(sheet_name):
     if sheet_name in _ws_cache:
         return _ws_cache[sheet_name]
@@ -252,7 +327,7 @@ def get_ws(sheet_name):
     try:
         ws = workbook.worksheet(sheet_name)
     except Exception:
-        ws = workbook.add_worksheet(title=sheet_name, rows=1000, cols=30)
+        ws = workbook.add_worksheet(title=sheet_name, rows=1000, cols=40)
 
     ensure_headers(ws, SHEET_HEADERS.get(sheet_name, []))
     _ws_cache[sheet_name] = ws
@@ -283,21 +358,6 @@ def ensure_headers(ws, required_headers):
         print(f"Header setup error for {ws.title}: {error}")
 
 
-def ensure_all_sheets():
-    workbook = _workbook
-
-    if not workbook:
-        return
-
-    for sheet_name, headers in SHEET_HEADERS.items():
-        try:
-            ws = workbook.worksheet(sheet_name)
-        except Exception:
-            ws = workbook.add_worksheet(title=sheet_name, rows=1000, cols=30)
-
-        ensure_headers(ws, headers)
-
-
 def get_headers(ws):
     return ws.row_values(1)
 
@@ -325,7 +385,7 @@ def append_record(sheet_name, data):
             return False
 
 
-def find_row_by_value(sheet_name, key, value):
+def find_latest_row_by_value(sheet_name, key, value):
     ws = get_ws(sheet_name)
 
     if not ws:
@@ -340,18 +400,51 @@ def find_row_by_value(sheet_name, key, value):
         col_index = headers.index(key) + 1
         values = ws.col_values(col_index)
 
+        latest_row = None
+
         for row_number, cell_value in enumerate(values, start=1):
             if row_number == 1:
                 continue
 
             if str(cell_value).strip() == str(value).strip():
-                return ws, row_number
+                latest_row = row_number
 
-        return ws, None
+        return ws, latest_row
 
     except Exception as error:
-        print(f"Find row error ({sheet_name}): {error}")
+        print(f"Find latest row error ({sheet_name}): {error}")
         return ws, None
+
+
+def find_all_rows_by_value(sheet_name, key, value):
+    ws = get_ws(sheet_name)
+
+    if not ws:
+        return None, []
+
+    try:
+        headers = get_headers(ws)
+
+        if key not in headers:
+            return ws, []
+
+        col_index = headers.index(key) + 1
+        values = ws.col_values(col_index)
+
+        rows = []
+
+        for row_number, cell_value in enumerate(values, start=1):
+            if row_number == 1:
+                continue
+
+            if str(cell_value).strip() == str(value).strip():
+                rows.append(row_number)
+
+        return ws, rows
+
+    except Exception as error:
+        print(f"Find all rows error ({sheet_name}): {error}")
+        return ws, []
 
 
 def update_row(sheet_name, row_number, data):
@@ -386,8 +479,23 @@ def update_row(sheet_name, row_number, data):
             return False
 
 
+def update_all_rows_by_value(sheet_name, key, value, data):
+    ws, rows = find_all_rows_by_value(sheet_name, key, value)
+
+    if not ws:
+        return False
+
+    ok = True
+
+    for row_number in rows:
+        if not update_row(sheet_name, row_number, data):
+            ok = False
+
+    return ok
+
+
 def upsert_record(sheet_name, key, key_value, data):
-    ws, row_number = find_row_by_value(sheet_name, key, key_value)
+    ws, row_number = find_latest_row_by_value(sheet_name, key, key_value)
 
     if row_number:
         return update_row(sheet_name, row_number, data)
@@ -398,7 +506,7 @@ def upsert_record(sheet_name, key, key_value, data):
 
 
 def get_record(sheet_name, key, key_value):
-    ws, row_number = find_row_by_value(sheet_name, key, key_value)
+    ws, row_number = find_latest_row_by_value(sheet_name, key, key_value)
 
     if not ws or not row_number:
         return None
@@ -438,18 +546,17 @@ def log_message(sender_id, direction, message_type, message, state=""):
         "sender_id": sender_id,
         "direction": direction,
         "message_type": message_type,
-        "message": message[:45000] if message else "",
+        "message": str(message or "")[:45000],
         "state": state
     })
 
 
 # ============================================================
-# LEAD + STATE HELPERS
+# STATE HELPERS
 # ============================================================
 
 def create_lead_if_missing(sender_id):
     sender_id = str(sender_id)
-
     existing = get_record("Leads", "sender_id", sender_id)
 
     if existing:
@@ -482,10 +589,9 @@ def get_state(sender_id):
         return {
             "step": "new",
             "data": {},
-            "handover": False
+            "handover": False,
+            "lead": {}
         }
-
-    data = {}
 
     try:
         data = json.loads(lead.get("data_json", "{}") or "{}")
@@ -496,7 +602,7 @@ def get_state(sender_id):
 
     handover_row = get_record("Handover_Status", "sender_id", sender_id)
 
-    if handover_row and str(handover_row.get("handover_active", "")).lower() == "true":
+    if handover_row and is_truthy(handover_row.get("handover_active", "")):
         handover_active = True
 
     return {
@@ -509,6 +615,7 @@ def get_state(sender_id):
 
 def save_state(sender_id, step=None, data=None, extra=None):
     sender_id = str(sender_id)
+
     update_data = {
         "updated_at": now_iso()
     }
@@ -528,11 +635,16 @@ def save_state(sender_id, step=None, data=None, extra=None):
 def reset_user(sender_id):
     sender_id = str(sender_id)
 
+    clean_data = {}
+
     save_state(
         sender_id,
         step="new",
-        data={},
+        data=clean_data,
         extra={
+            "business_name": "",
+            "business_type": "",
+            "location": "",
             "goal": "",
             "service_interest": "",
             "whatsapp": "",
@@ -543,7 +655,8 @@ def reset_user(sender_id):
             "handover_status": "none",
             "audit_id": "",
             "last_audit_summary": "",
-            "last_user_message_at": now_iso()
+            "last_user_message_at": now_iso(),
+            "updated_at": now_iso()
         }
     )
 
@@ -554,8 +667,14 @@ def reset_user(sender_id):
         "notes": "Reset by user"
     })
 
+    update_all_rows_by_value("Pending_Audits", "sender_id", sender_id, {
+        "status": "cancelled",
+        "last_attempt_at": now_iso(),
+        "error_type": "reset"
+    })
 
-def activate_handover(sender_id, reason="human_handover", notes=""):
+
+def activate_handover(sender_id, reason="lead_ready", notes=""):
     sender_id = str(sender_id)
 
     upsert_record("Handover_Status", "sender_id", sender_id, {
@@ -596,9 +715,13 @@ def update_last_bot_message(sender_id):
 
 def send_dm(recipient_id, message, message_type="bot", state=""):
     recipient_id = str(recipient_id)
+    message = compact_text(message)
+
+    if not message:
+        return {"error": "empty message"}
 
     if not PAGE_ACCESS_TOKEN:
-        print("PAGE_ACCESS_TOKEN is missing.")
+        print("PAGE_ACCESS_TOKEN missing.")
         return {"error": "PAGE_ACCESS_TOKEN missing"}
 
     url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/me/messages"
@@ -640,12 +763,12 @@ def send_dm(recipient_id, message, message_type="bot", state=""):
         return {"error": str(error)}
 
 
-def delayed_send_dm(recipient_id, message, delay=1.2, message_type="bot", state=""):
+def delayed_send_dm(recipient_id, message, delay=1.0, message_type="bot", state=""):
     time.sleep(delay)
     return send_dm(recipient_id, message, message_type=message_type, state=state)
 
 
-def is_recent_bot_echo(user_id, seconds=75):
+def is_recent_bot_echo(user_id, seconds=120):
     user_id = str(user_id)
     last_sent = recent_bot_sends.get(user_id)
 
@@ -682,7 +805,7 @@ def download_image(image_url):
 
 
 # ============================================================
-# API STATUS + GEMINI HELPERS
+# GEMINI + API STATUS
 # ============================================================
 
 def classify_gemini_error(error):
@@ -697,7 +820,7 @@ def classify_gemini_error(error):
     if "api key" in error_text or "permission" in error_text or "unauthorized" in error_text:
         return "auth"
 
-    if "404" in error_text or "model" in error_text and "not found" in error_text:
+    if "404" in error_text or ("model" in error_text and "not found" in error_text):
         return "model"
 
     return "error"
@@ -791,19 +914,9 @@ def generate_text_with_pool(engine, contents):
                     model = genai.GenerativeModel(model_name)
                     response = model.generate_content(contents)
 
-                try:
-                    response_text = response.text
-                except Exception as text_error:
-                    last_error = str(text_error)
-                    upsert_api_status(
-                        engine=engine,
-                        key_index=key_index,
-                        status="empty_response",
-                        last_error=last_error
-                    )
-                    continue
+                response_text = getattr(response, "text", "") or ""
 
-                if response_text and response_text.strip():
+                if response_text.strip():
                     upsert_api_status(
                         engine=engine,
                         key_index=key_index,
@@ -817,7 +930,14 @@ def generate_text_with_pool(engine, contents):
                         "error": ""
                     }
 
-                last_error = "Empty Gemini response"
+                last_error = "Empty response"
+
+                upsert_api_status(
+                    engine=engine,
+                    key_index=key_index,
+                    status="empty_response",
+                    last_error=last_error
+                )
 
             except Exception as error:
                 error_type = classify_gemini_error(error)
@@ -854,221 +974,552 @@ def generate_text_with_pool(engine, contents):
 
 
 # ============================================================
-# AUDIT PROMPT
+# BUSINESS TYPE + CTA HELPERS
+# ============================================================
+
+def normalize_business_category(business_type):
+    text = normalize_text(business_type)
+
+    if any(word in text for word in ["restaurant", "cafe", "food", "takeaway", "hotel", "bakery", "cloud kitchen"]):
+        return "restaurant"
+
+    if any(word in text for word in ["salon", "beauty", "spa", "makeup", "clinic", "doctor", "dental", "skin", "aesthetic"]):
+        return "salon_clinic"
+
+    if any(word in text for word in ["real estate", "property", "realtor", "builder", "developer", "plot", "land"]):
+        return "real_estate"
+
+    if any(word in text for word in ["gym", "fitness", "trainer", "yoga", "workout"]):
+        return "gym"
+
+    if any(word in text for word in ["ecommerce", "e-commerce", "boutique", "fashion", "clothing", "store", "shop", "clothes"]):
+        return "ecommerce"
+
+    if any(word in text for word in ["agency", "service", "consultant", "coach", "personal brand", "creator", "influencer", "software", "saas"]):
+        return "service"
+
+    return "other"
+
+
+def natural_next_step_for_business(business_type):
+    category = normalize_business_category(business_type)
+
+    if category == "restaurant":
+        return "DM MENU or WhatsApp ORDER"
+    if category == "salon_clinic":
+        return "DM BOOK or Book Appointment"
+    if category == "real_estate":
+        return "DM SITE or Request Details"
+    if category == "gym":
+        return "DM TRIAL or Book Trial Session"
+    if category == "ecommerce":
+        return "DM CATALOG or WhatsApp ORDER"
+    if category == "service":
+        return "DM CALL or Book Consultation"
+
+    return "DM INFO or Book Consultation"
+
+
+def parse_business_type(raw_text):
+    value = normalize_text(raw_text).replace(".", "")
+
+    type_map = {
+        "1": "Restaurant",
+        "one": "Restaurant",
+        "first": "Restaurant",
+        "restaurant": "Restaurant",
+
+        "2": "Cafe",
+        "two": "Cafe",
+        "second": "Cafe",
+        "cafe": "Cafe",
+        "coffee": "Cafe",
+
+        "3": "Salon",
+        "three": "Salon",
+        "third": "Salon",
+        "salon": "Salon",
+        "beauty": "Salon",
+
+        "4": "Gym",
+        "four": "Gym",
+        "fourth": "Gym",
+        "gym": "Gym",
+        "fitness": "Gym",
+
+        "5": "Boutique",
+        "five": "Boutique",
+        "fifth": "Boutique",
+        "boutique": "Boutique",
+        "fashion": "Boutique",
+
+        "6": "Clinic",
+        "six": "Clinic",
+        "sixth": "Clinic",
+        "clinic": "Clinic",
+        "doctor": "Clinic",
+
+        "7": "Real Estate",
+        "seven": "Real Estate",
+        "seventh": "Real Estate",
+        "real estate": "Real Estate",
+        "property": "Real Estate",
+
+        "8": "E-commerce",
+        "eight": "E-commerce",
+        "eighth": "E-commerce",
+        "ecommerce": "E-commerce",
+        "e-commerce": "E-commerce",
+        "online store": "E-commerce",
+
+        "9": "Personal Brand",
+        "nine": "Personal Brand",
+        "ninth": "Personal Brand",
+        "personal brand": "Personal Brand",
+        "creator": "Personal Brand",
+
+        "10": "Other",
+        "ten": "Other",
+        "other": "Other",
+        "something else": "Other",
+        "different": "Other"
+    }
+
+    if value in type_map:
+        return type_map[value]
+
+    return raw_text.strip()
+
+
+# ============================================================
+# GOAL OPTIONS + INTENT UNDERSTANDING
+# ============================================================
+
+def get_goal_options(business_type):
+    category = normalize_business_category(business_type)
+
+    if category == "restaurant":
+        return [
+            ("1", "More orders", ["order", "orders", "sales", "more orders", "food orders"]),
+            ("2", "Better food reels/content", ["content", "reels", "food reel", "posts", "photos", "videos"]),
+            ("3", "More repeat customers", ["repeat", "customers", "loyal", "retention"]),
+            ("4", "WhatsApp ordering system", ["whatsapp", "ordering system", "system", "automation"]),
+            ("5", "Offers and local campaigns", ["offer", "offers", "campaign", "local", "discount"]),
+            ("6", "Full marketing management", ["full", "management", "manage", "everything", "full management"]),
+            ("7", "Need guidance", ["not sure", "unsure", "guide", "guidance", "don't know", "dont know", "confused"])
+        ]
+
+    if category == "salon_clinic":
+        return [
+            ("1", "More appointments", ["appointment", "appointments", "booking", "bookings"]),
+            ("2", "Better trust and reviews", ["trust", "reviews", "proof", "testimonial"]),
+            ("3", "More local reach", ["local", "reach", "nearby", "area"]),
+            ("4", "Better reels/content", ["content", "reels", "posts", "videos"]),
+            ("5", "Ads for bookings", ["ads", "advertising", "paid", "bookings"]),
+            ("6", "Full page management", ["full", "management", "manage", "everything"]),
+            ("7", "Need guidance", ["not sure", "unsure", "guide", "guidance", "don't know", "dont know", "confused"])
+        ]
+
+    if category == "real_estate":
+        return [
+            ("1", "More property leads", ["leads", "property leads", "buyers", "enquiries"]),
+            ("2", "Better listing content", ["listing", "content", "posts", "property content"]),
+            ("3", "More site visit enquiries", ["site visit", "visit", "enquiry", "enquiries"]),
+            ("4", "Local authority building", ["authority", "trust", "brand", "local"]),
+            ("5", "Ads for buyers/investors", ["ads", "buyers", "investors", "paid"]),
+            ("6", "Full lead generation system", ["full", "management", "lead generation", "system", "everything"]),
+            ("7", "Need guidance", ["not sure", "unsure", "guide", "guidance", "don't know", "dont know", "confused"])
+        ]
+
+    if category == "gym":
+        return [
+            ("1", "More trial enquiries", ["trial", "trials", "enquiries", "leads"]),
+            ("2", "More memberships", ["membership", "memberships", "members"]),
+            ("3", "Better transformation content", ["transformation", "content", "reels", "results"]),
+            ("4", "Local ads", ["ads", "local ads", "paid"]),
+            ("5", "WhatsApp/DM follow-up system", ["whatsapp", "dm", "follow up", "automation"]),
+            ("6", "Full Instagram management", ["full", "management", "manage", "everything"]),
+            ("7", "Need guidance", ["not sure", "unsure", "guide", "guidance", "don't know", "dont know", "confused"])
+        ]
+
+    if category == "ecommerce":
+        return [
+            ("1", "More product sales", ["sales", "product sales", "orders"]),
+            ("2", "Better product content", ["content", "product content", "reels", "posts"]),
+            ("3", "More WhatsApp orders", ["whatsapp", "orders", "dm orders"]),
+            ("4", "Ads for conversions", ["ads", "conversion", "paid"]),
+            ("5", "Influencer/content strategy", ["influencer", "strategy", "content"]),
+            ("6", "Full growth system", ["full", "growth", "management", "everything"]),
+            ("7", "Need guidance", ["not sure", "unsure", "guide", "guidance", "don't know", "dont know", "confused"])
+        ]
+
+    if category == "service":
+        return [
+            ("1", "More qualified leads", ["leads", "qualified leads", "clients", "customers"]),
+            ("2", "Better authority content", ["authority", "content", "trust", "positioning"]),
+            ("3", "More consultation calls", ["calls", "consultation", "bookings", "appointments"]),
+            ("4", "Ads and funnel system", ["ads", "funnel", "paid", "lead generation"]),
+            ("5", "Personal brand positioning", ["brand", "personal brand", "positioning"]),
+            ("6", "Full growth management", ["full", "management", "manage", "everything"]),
+            ("7", "Need guidance", ["not sure", "unsure", "guide", "guidance", "don't know", "dont know", "confused"])
+        ]
+
+    return [
+        ("1", "More enquiries", ["enquiries", "leads", "clients", "customers"]),
+        ("2", "More sales", ["sales", "orders", "revenue"]),
+        ("3", "Better content", ["content", "reels", "posts", "videos"]),
+        ("4", "Better trust and positioning", ["trust", "positioning", "brand", "proof"]),
+        ("5", "Ads and lead generation", ["ads", "lead generation", "paid"]),
+        ("6", "Full digital growth system", ["full", "growth", "management", "everything"]),
+        ("7", "Need guidance", ["not sure", "unsure", "guide", "guidance", "don't know", "dont know", "confused"])
+    ]
+
+
+def get_goal_menu(business_type):
+    options = get_goal_options(business_type)
+
+    lines = [
+        "What do you want most right now? 👇",
+        ""
+    ]
+
+    for number, label, _keywords in options:
+        lines.append(f"{number}. {label}")
+
+    return "\n".join(lines)
+
+
+def classify_user_intent(text):
+    value = normalize_text(text)
+    clean = re.sub(r"[^a-z0-9+@.\s]", "", value).strip()
+
+    if not clean:
+        return "empty"
+
+    if clean in ["stop", "cancel", "unsubscribe", "not interested", "no thanks", "no thank you"]:
+        return "reject"
+
+    if clean in ["reset", "restart", "start over", "start again"]:
+        return "reset"
+
+    if clean in ["continue", "yes continue", "continue audit", "send audit"]:
+        return "continue"
+
+    if clean in ["?", "what", "why", "how", "explain", "what happened", "tell me more", "more details", "details"]:
+        return "question"
+
+    if any(word in clean for word in ["price", "pricing", "cost", "how much", "package", "charges"]):
+        return "pricing"
+
+    if any(word in clean for word in ["later", "not now", "maybe later", "after some time"]):
+        return "delay"
+
+    if any(word in clean for word in ["yes", "ok", "okay", "done", "do it", "go ahead", "let us", "lets", "start", "interested", "help", "continue", "proceed"]):
+        return "proceed"
+
+    if any(word in clean for word in ["full", "management", "manage everything", "everything", "complete"]):
+        return "full_management"
+
+    return "general"
+
+
+def parse_goal(business_type, text):
+    value = normalize_text(text)
+    value_clean = re.sub(r"[^a-z0-9\s]", "", value).strip()
+
+    if value_clean in ["?", "what", "why", "how", "what happened", "explain"]:
+        return {
+            "type": "question",
+            "goal": ""
+        }
+
+    if value_clean in ["not sure", "unsure", "idk", "i dont know", "i don't know", "confused", "guide me", "guidance"]:
+        return {
+            "type": "goal",
+            "goal": "Need guidance"
+        }
+
+    options = get_goal_options(business_type)
+
+    for number, label, keywords in options:
+        if value_clean == number:
+            return {
+                "type": "goal",
+                "goal": label
+            }
+
+    number_match = re.search(r"\b([1-7])\b", value_clean)
+
+    if number_match:
+        selected_number = number_match.group(1)
+
+        for number, label, _keywords in options:
+            if number == selected_number:
+                return {
+                    "type": "goal",
+                    "goal": label
+                }
+
+    best_score = 0
+    best_goal = ""
+
+    for _number, label, keywords in options:
+        score = 0
+
+        if label.lower() in value:
+            score += 5
+
+        for keyword in keywords:
+            if keyword in value:
+                score += 3
+
+        if score > best_score:
+            best_score = score
+            best_goal = label
+
+    if best_goal:
+        return {
+            "type": "goal",
+            "goal": best_goal
+        }
+
+    intent = classify_user_intent(text)
+
+    if intent == "full_management":
+        return {
+            "type": "goal",
+            "goal": "Full management"
+        }
+
+    if intent == "proceed":
+        return {
+            "type": "goal",
+            "goal": "Need guidance"
+        }
+
+    if intent == "delay":
+        return {
+            "type": "delay",
+            "goal": ""
+        }
+
+    if intent == "reject":
+        return {
+            "type": "reject",
+            "goal": ""
+        }
+
+    return {
+        "type": "goal",
+        "goal": text.strip() if text.strip() else "Need guidance"
+    }
+
+
+# ============================================================
+# CONTACT EXTRACTION
+# ============================================================
+
+def extract_email(text):
+    match = re.search(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", text or "")
+    return match.group(0) if match else ""
+
+
+def extract_phone(text):
+    if not text:
+        return ""
+
+    candidates = re.findall(r"(?:\+?\d[\d\s\-()]{7,}\d)", text)
+
+    for candidate in candidates:
+        digits = re.sub(r"\D", "", candidate)
+
+        if 10 <= len(digits) <= 15:
+            return candidate.strip()
+
+    return ""
+
+
+def has_contact(text):
+    return bool(extract_phone(text) or extract_email(text))
+
+
+# ============================================================
+# AUDIT PROMPT + CLEANING
 # ============================================================
 
 def create_audit_prompt(name, business_type, location):
+    natural_action = natural_next_step_for_business(business_type)
+
     return f"""
-You are the senior Instagram growth auditor for ClientBoost, a global full-service digital growth agency.
+You are a senior Instagram growth strategist at ClientBoost.
 
-You are not a generic AI assistant.
-You are acting like an experienced agency strategist reviewing this business for growth, trust, positioning and conversion.
+You are reviewing a business Instagram profile from a screenshot.
 
-ClientBoost helps businesses grow through:
-- Strategy
-- SEO
-- Ads
-- Content
-- Social media
-- Branding
-- Web
-- Lead generation
-- AI automation
-- Conversion systems
-
-Business details:
-- Business Name: {name}
-- Business Type: {business_type}
-- City/Country: {location}
+Business:
+Name: {name}
+Type: {business_type}
+Location: {location}
 
 Analyse only what is visible in the screenshot:
-- Username
-- Name field
-- Bio clarity
-- Profile picture
-- Follower/following count
-- Number of posts
-- Story highlights
-- Highlight names and covers
-- Visible post grid
-- Visual consistency
-- Offer clarity
-- CTA clarity
-- Trust signals
-- Lead flow
+username, name field, bio, profile photo, follower/following count, post count, story highlights, visible grid, visual clarity, trust signals, offer clarity, and enquiry path.
 
-Important rules:
-- Keep the audit detailed and world-class.
-- Make it clean and easy to read in Instagram DM.
-- Use professional emojis in headings and key bullets.
-- Do not overuse emojis.
-- Do not sound childish.
-- Do not sound like a PDF report.
-- Do not invent fake data.
-- Do not claim guaranteed results.
+Output rules:
+- Write like an experienced human strategist.
+- Use simple English.
+- Use clean bullet points.
+- Use professional emojis in headings.
+- Keep it suitable for Instagram DM.
+- Maximum 750 words.
+- Do not use markdown symbols like **, ##, tables, or code formatting.
+- Do not write the words CTA, Soft CTA, Call-to-action label, prompt, AI, Gemini, model, API, automation, code, or system.
+- Do not recommend DM GROWTH or reply GROWTH.
+- The recommended next step for this business should be natural, such as: {natural_action}
+- Do not overpromise or guarantee results.
+- Do not invent information that is not visible.
 - If something is not visible, say it is not visible.
-- Do not recommend “DM GROWTH” or “reply GROWTH” to the business unless it is truly relevant.
-- GROWTH is ClientBoost’s audit trigger, not the default CTA for every client.
-- Recommend a CTA based on their business type.
-- Every recommendation must feel specific to {name}, {business_type}, and {location}.
-- Keep paragraphs short.
-- Use bullet points.
-- Make the user feel that a real strategist understood their profile.
 
-Business-specific CTA guidance:
-- Restaurant/Cafe: Order Now, View Menu, WhatsApp to Order, Book Table, DM MENU.
-- Salon/Clinic: Book Appointment, Call Now, Get Consultation, DM BOOK.
-- Real Estate: Schedule Site Visit, Request Price, Talk to Advisor, DM SITE.
-- Gym/Fitness: Claim Trial Session, Book Fitness Consultation, DM TRIAL.
-- E-commerce/Boutique: Shop Now, View Collection, Order on WhatsApp, DM CATALOG.
-- Agency/Service Business/Personal Brand: Book a Call, Request Quote, Get Consultation, DM AUDIT.
-- Other business: choose the most natural CTA based on what they sell.
+Structure exactly like this:
 
-Write the audit in this exact structure:
-
-━━━━━━━━━━━━━━━━━━━━━━
 🎯 CLIENTBOOST INSTAGRAM AUDIT
-━━━━━━━━━━━━━━━━━━━━━━
 
 🏢 Business: {name}
 📍 Location: {location}
 🏷️ Category: {business_type}
 
 Quick verdict:
-[Give 2–3 sharp lines summarising the profile’s current strength and biggest growth problem.]
+Give 2 short lines about the profile’s biggest strength and biggest growth problem.
 
-━━━━━━━━━━━━━━━━━━━━━━
-📊 1. PROFILE SCORE
-
+📊 1. Profile Score
 Score: X/10
 
-✅ What is working:
-- [Specific point from the screenshot]
-- [Specific point from the screenshot]
+Working well:
+• specific visible strength
+• specific visible strength
 
-⚠️ What needs fixing:
-- [Specific issue from the screenshot]
-- [Specific issue from the screenshot]
+Needs fixing:
+• specific visible weakness
+• specific visible weakness
 
-🔧 Top profile fix:
-[One clear action they should do first.]
+First fix:
+One clear first action.
 
-━━━━━━━━━━━━━━━━━━━━━━
-✍️ 2. BIO & POSITIONING FIXES
-
+✍️ 2. Bio & Positioning
 Current issue:
-[Explain what is weak/confusing/missing in the visible bio or name field.]
+Short explanation.
 
-Recommended bio:
-[Write a better Instagram bio for this exact business. Keep it practical and usable.]
+Better bio idea:
+Write one improved bio for this exact business.
 
-Why this works:
-- [Reason 1]
-- [Reason 2]
-- [Reason 3]
+Why it works:
+• reason
+• reason
+• reason
 
-CTA recommendation:
-[Suggest the best CTA for their business type. Do NOT blindly say DM GROWTH.]
+📸 3. Content & Grid
+Working well:
+• point
+• point
 
-━━━━━━━━━━━━━━━━━━━━━━
-📸 3. CONTENT & GRID AUDIT
+Improve:
+• point
+• point
 
-✅ What is working:
-- [Specific visible content strength]
-- [Specific visible content strength]
+Post ideas:
+• idea 1
+• idea 2
+• idea 3
 
-⚠️ What is holding growth back:
-- [Specific visible content weakness]
-- [Specific visible content weakness]
-
-Content direction:
-[Explain what type of content they should post more of.]
-
-3 content ideas for {business_type}:
-- [Idea 1 — specific and practical]
-- [Idea 2 — specific and practical]
-- [Idea 3 — specific and practical]
-
-━━━━━━━━━━━━━━━━━━━━━━
-⭐ 4. TRUST & HIGHLIGHT AUDIT
-
+⭐ 4. Trust & Highlights
 Current issue:
-[Analyse highlights, trust signals, reviews, proof, FAQs, results, menu/services, etc.]
+Short explanation.
 
 Recommended highlights:
-- ✅ Services / Menu
-- ✅ Reviews / Results
-- ✅ How It Works
-- ✅ FAQ
-- ✅ Contact / Book Now
+• Services/Menu
+• Reviews/Results
+• How It Works
+• FAQ
+• Contact/Book Now
 
 Best trust fix:
-[One practical trust-building action based on their business.]
+One practical action.
 
-━━━━━━━━━━━━━━━━━━━━━━
-📍 5. LOCAL REACH & DISCOVERY
-
+📍 5. Local Reach
 Current issue:
-[Explain if their profile is weak in local search, location clarity, local keywords, or niche positioning.]
+Short explanation.
 
-Local reach fixes:
-- Add location keywords clearly.
-- Use area/city terms naturally.
-- Post content that proves local presence.
-- Use local hashtags only where relevant.
+Fixes:
+• location keyword idea
+• local content idea
+• hashtag/search idea
 
-Suggested keywords/hashtags:
-[Give specific keyword or hashtag examples based on {business_type} and {location}.]
-
-━━━━━━━━━━━━━━━━━━━━━━
-💬 6. LEAD FLOW & CONVERSION
-
+💬 6. Lead Flow
 Current issue:
-[Explain what stops a visitor from becoming a lead/customer.]
+Explain what may stop people from contacting them.
 
-Best CTA for this profile:
-[Give a business-specific CTA. Do NOT use DM GROWTH as default.]
+Best next step:
+Give the best natural next step for their business. Do not call it CTA.
 
-Conversion fix:
-[Explain how to reduce friction from profile visit to enquiry/order/booking.]
+🗓️ 7. 7-Day Action Plan
+Day 1: one action
+Day 2: one action
+Day 3: one action
+Day 4: one action
+Day 5: one action
+Day 6: one action
+Day 7: one action
 
-━━━━━━━━━━━━━━━━━━━━━━
-🗓️ 7. 7-DAY ACTION PLAN
-
-Day 1:
-[Profile/bio fix]
-
-Day 2:
-[Highlight/trust fix]
-
-Day 3:
-[Content fix]
-
-Day 4:
-[Local reach fix]
-
-Day 5:
-[Conversion/CTA fix]
-
-Day 6:
-[Engagement/story fix]
-
-Day 7:
-[Review and improve based on response]
-
-━━━━━━━━━━━━━━━━━━━━━━
-🏁 FINAL VERDICT
-
+🏁 Final verdict
 Overall rating: X/10
 
-[Give one honest final line about where the profile stands today.]
-
-Best next move:
-[Give one clear priority action.]
-
-Soft CTA:
-If you want ClientBoost to help implement these fixes for your profile, reply HELP and our team will guide you.
+Give one honest final line and one priority move.
 """
+
+
+def clean_ai_text_for_instagram(text, business_type=""):
+    if not text:
+        return ""
+
+    action = natural_next_step_for_business(business_type)
+
+    cleaned = str(text)
+
+    replacements = {
+        "**": "",
+        "__": "",
+        "###": "",
+        "##": "",
+        "#": "",
+        "`": "",
+        "Soft CTA:": "",
+        "CTA recommendation:": "Best next step:",
+        "CTA Recommendation:": "Best next step:",
+        "CTA:": "Best next step:",
+        "Call to Action:": "Best next step:",
+        "call-to-action": "next step",
+        "Call-to-action": "Next step",
+        "DM GROWTH": action,
+        "Dm Growth": action,
+        "dm growth": action,
+        "reply GROWTH": f"use {action}",
+        "Reply GROWTH": f"use {action}",
+        "send GROWTH": f"use {action}",
+        "Send GROWTH": f"use {action}",
+        "Gemini": "",
+        "API": "",
+        "model": "",
+        "automation": ""
+    }
+
+    for old, new in replacements.items():
+        cleaned = cleaned.replace(old, new)
+
+    cleaned = re.sub(r"\n\s*Soft CTA\s*:?\s*\n?", "\n", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\n\s*CTA\s*:?\s*\n?", "\n", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = cleaned.replace("|", " ")
+    cleaned = compact_text(cleaned)
+
+    return cleaned
 
 
 def analyse_screenshot_with_gemini(image, name, business_type, location):
@@ -1080,7 +1531,8 @@ def analyse_screenshot_with_gemini(image, name, business_type, location):
 # MESSAGE SPLITTING
 # ============================================================
 
-def split_message(text, limit=900):
+def split_message(text, limit=850):
+    text = compact_text(text)
     parts = []
     current = ""
 
@@ -1189,30 +1641,29 @@ def save_audit_history(audit_id, sender_id, name, business_type, location, audit
 
 
 def send_audit_to_user(sender_id, audit_id, name, business_type, location, audit_text):
+    audit_text = clean_ai_text_for_instagram(audit_text, business_type)
+
     intro = (
-        "Your free ClientBoost Instagram audit is ready ✅\n\n"
+        "Your ClientBoost audit is ready ✅\n\n"
         f"🏢 Business: {name}\n"
         f"🏷️ Type: {business_type}\n"
         f"📍 Location: {location}\n\n"
-        "Here is the strategic breakdown:"
+        "Here’s the clear breakdown:"
     )
 
     send_dm(sender_id, intro, message_type="audit_intro", state="audit_sent")
-    time.sleep(1)
+    time.sleep(0.8)
 
     for part in split_message(audit_text):
         send_dm(sender_id, part, message_type="audit_part", state="audit_sent")
-        time.sleep(1.2)
+        time.sleep(0.9)
 
-    closing = (
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🚀 Want help implementing this?\n\n"
-        "Your audit shows what is blocking better enquiries:\n"
-        "profile clarity, content direction, trust signals and lead flow.\n\n"
-        "Reply HELP if you want ClientBoost to fix this properly. 🤝"
+    final_message = (
+        "If you want ClientBoost to help fix the profile, content direction, trust signals and enquiry flow, send HELP.\n\n"
+        "Our team will guide you from there. 🤝"
     )
 
-    send_dm(sender_id, closing, message_type="audit_cta", state="audit_sent")
+    send_dm(sender_id, final_message, message_type="audit_next_step", state="audit_sent")
 
     save_audit_history(
         audit_id=audit_id,
@@ -1231,9 +1682,9 @@ def process_audit_request(sender_id, data, image_url, first_time=True, from_retr
         send_dm(
             sender_id,
             "Screenshot received 📸\n\n"
-            "We’re analysing your Instagram profile now.\n\n"
-            "You’ll get a detailed audit with profile, bio, content, trust, reach and lead-flow fixes.\n\n"
-            "This usually takes 20–30 seconds ⏳",
+            "We’re reviewing your Instagram profile now.\n\n"
+            "You’ll get a clear audit covering profile clarity, content, trust, local reach and enquiry flow.\n\n"
+            "This usually takes a short moment ⏳",
             message_type="audit_processing",
             state="audit_processing"
         )
@@ -1244,14 +1695,12 @@ def process_audit_request(sender_id, data, image_url, first_time=True, from_retr
         if not from_retry:
             send_dm(
                 sender_id,
-                "I could not download the screenshot properly.\n\n"
-                "Please send the screenshot again.",
+                "The screenshot did not load properly.\n\n"
+                "Please send it once more and we’ll continue.",
                 message_type="image_error",
                 state="ask_screenshot"
             )
-        return {
-            "status": "image_failed"
-        }
+        return {"status": "image_failed"}
 
     result = analyse_screenshot_with_gemini(
         image=image,
@@ -1287,9 +1736,9 @@ def process_audit_request(sender_id, data, image_url, first_time=True, from_retr
     if not from_retry:
         send_dm(
             sender_id,
-            "Your profile is in the analysis queue 📌\n\n"
-            "We’re reviewing it carefully, so this may take a little longer than usual.\n\n"
-            "No need to resend anything. Your audit will be sent here automatically.",
+            "Your profile review is saved 📌\n\n"
+            "It is taking a little longer than usual, but no need to resend anything.\n\n"
+            "Your audit will be sent here automatically once it is ready.",
             message_type="audit_queued",
             state="audit_pending"
         )
@@ -1314,7 +1763,7 @@ def retry_pending_audits(limit_sender_id=None):
         if limit_sender_id and sender_id != str(limit_sender_id):
             continue
 
-        if status not in ["pending"]:
+        if status != "pending":
             continue
 
         last_attempt_at = record.get("last_attempt_at", "")
@@ -1326,13 +1775,12 @@ def retry_pending_audits(limit_sender_id=None):
 
         window_age = seconds_since(last_user_message_at)
 
-        # Around 23 hours, ask the user to reply so the conversation can continue.
         if window_age >= 23 * 60 * 60 and not warning_sent:
             send_dm(
                 sender_id,
                 "This is taking longer than expected.\n\n"
                 "Your audit request is still saved.\n"
-                "Please reply CONTINUE here so we can keep the audit active and send it as soon as analysis is available.",
+                "Please reply CONTINUE here so we can keep it active and send it as soon as it is ready.",
                 message_type="audit_23h_warning",
                 state="audit_pending"
             )
@@ -1345,7 +1793,6 @@ def retry_pending_audits(limit_sender_id=None):
             warnings += 1
             continue
 
-        # After 24 hours with no user reply, wait for the user to message again.
         if window_age >= 24 * 60 * 60:
             update_row("Pending_Audits", index, {
                 "status": "waiting_user",
@@ -1354,8 +1801,6 @@ def retry_pending_audits(limit_sender_id=None):
 
             waiting += 1
             continue
-
-        retry_count = 0
 
         try:
             retry_count = int(record.get("retry_count", 0))
@@ -1401,511 +1846,205 @@ def retry_pending_audits(limit_sender_id=None):
     }
 
 
+def background_retry_loop():
+    time.sleep(15)
+
+    while True:
+        try:
+            retry_pending_audits()
+        except Exception as error:
+            print(f"Background retry loop error: {error}")
+
+        time.sleep(RETRY_INTERVAL_SECONDS)
+
+
+def start_background_retry_once():
+    global background_retry_started
+
+    if not ENABLE_BACKGROUND_RETRY:
+        return
+
+    if background_retry_started:
+        return
+
+    background_retry_started = True
+    thread = threading.Thread(target=background_retry_loop)
+    thread.daemon = True
+    thread.start()
+
+
 # ============================================================
-# BUSINESS CATEGORY + GOALS
+# CONVERSION MESSAGES
 # ============================================================
 
-def normalize_business_category(business_type):
-    text = str(business_type or "").lower()
-
-    if any(word in text for word in ["restaurant", "cafe", "food", "takeaway", "hotel", "bakery", "cloud kitchen"]):
-        return "restaurant"
-
-    if any(word in text for word in ["salon", "beauty", "spa", "makeup", "clinic", "doctor", "dental", "skin", "aesthetic"]):
-        return "salon_clinic"
-
-    if any(word in text for word in ["real estate", "property", "realtor", "builder", "developer", "plot", "land"]):
-        return "real_estate"
-
-    if any(word in text for word in ["gym", "fitness", "trainer", "yoga", "workout"]):
-        return "gym"
-
-    if any(word in text for word in ["ecommerce", "e-commerce", "boutique", "fashion", "clothing", "store", "shop"]):
-        return "ecommerce"
-
-    if any(word in text for word in ["agency", "service", "consultant", "coach", "personal brand", "creator", "influencer"]):
-        return "service"
-
-    return "other"
-
-
-def get_goal_menu(business_type):
-    category = normalize_business_category(business_type)
-
-    if category == "restaurant":
-        return (
-            "What do you want most right now?\n\n"
-            "1. More orders\n"
-            "2. Better food reels/content\n"
-            "3. More repeat customers\n"
-            "4. WhatsApp ordering system\n"
-            "5. Offers and local campaigns\n"
-            "6. Full marketing management\n"
-            "7. Not sure — need guidance"
-        )
-
-    if category == "salon_clinic":
-        return (
-            "What do you want most right now?\n\n"
-            "1. More appointments\n"
-            "2. Better trust and reviews\n"
-            "3. More local reach\n"
-            "4. Better reels/content\n"
-            "5. Ads for bookings\n"
-            "6. Full page management\n"
-            "7. Not sure — need guidance"
-        )
-
-    if category == "real_estate":
-        return (
-            "What do you want most right now?\n\n"
-            "1. More property leads\n"
-            "2. Better listing content\n"
-            "3. More site visit enquiries\n"
-            "4. Local authority building\n"
-            "5. Ads for buyers/investors\n"
-            "6. Full lead generation system\n"
-            "7. Not sure — need guidance"
-        )
-
-    if category == "gym":
-        return (
-            "What do you want most right now?\n\n"
-            "1. More trial enquiries\n"
-            "2. More memberships\n"
-            "3. Better transformation content\n"
-            "4. Local ads\n"
-            "5. WhatsApp/DM follow-up system\n"
-            "6. Full Instagram management\n"
-            "7. Not sure — need guidance"
-        )
-
-    if category == "ecommerce":
-        return (
-            "What do you want most right now?\n\n"
-            "1. More product sales\n"
-            "2. Better product content\n"
-            "3. More WhatsApp orders\n"
-            "4. Ads for conversions\n"
-            "5. Influencer/content strategy\n"
-            "6. Full growth system\n"
-            "7. Not sure — need guidance"
-        )
-
-    if category == "service":
-        return (
-            "What do you want most right now?\n\n"
-            "1. More qualified leads\n"
-            "2. Better authority content\n"
-            "3. More consultation calls\n"
-            "4. Ads and funnel system\n"
-            "5. Personal brand positioning\n"
-            "6. Full growth management\n"
-            "7. Not sure — need guidance"
-        )
-
+def explain_goal_question_message(business_type):
     return (
-        "What do you want most right now?\n\n"
-        "1. More enquiries\n"
-        "2. More sales\n"
-        "3. Better content\n"
-        "4. Better trust and positioning\n"
-        "5. Ads and lead generation\n"
-        "6. Full digital growth system\n"
-        "7. Not sure — need guidance"
+        "No issue 👍\n\n"
+        "This question helps us understand what kind of help you need first, so we don’t suggest random services.\n\n"
+        "You can reply with a number, or just type it in words.\n\n"
+        "Example: content, ads, orders, leads, bookings, or full management."
     )
-
-
-def parse_goal(business_type, text):
-    category = normalize_business_category(business_type)
-    value = str(text or "").lower().strip().replace(".", "")
-
-    goal_maps = {
-        "restaurant": {
-            "1": "More orders",
-            "2": "Better food reels/content",
-            "3": "More repeat customers",
-            "4": "WhatsApp ordering system",
-            "5": "Offers and local campaigns",
-            "6": "Full marketing management",
-            "7": "Need guidance"
-        },
-        "salon_clinic": {
-            "1": "More appointments",
-            "2": "Better trust and reviews",
-            "3": "More local reach",
-            "4": "Better reels/content",
-            "5": "Ads for bookings",
-            "6": "Full page management",
-            "7": "Need guidance"
-        },
-        "real_estate": {
-            "1": "More property leads",
-            "2": "Better listing content",
-            "3": "More site visit enquiries",
-            "4": "Local authority building",
-            "5": "Ads for buyers/investors",
-            "6": "Full lead generation system",
-            "7": "Need guidance"
-        },
-        "gym": {
-            "1": "More trial enquiries",
-            "2": "More memberships",
-            "3": "Better transformation content",
-            "4": "Local ads",
-            "5": "WhatsApp/DM follow-up system",
-            "6": "Full Instagram management",
-            "7": "Need guidance"
-        },
-        "ecommerce": {
-            "1": "More product sales",
-            "2": "Better product content",
-            "3": "More WhatsApp orders",
-            "4": "Ads for conversions",
-            "5": "Influencer/content strategy",
-            "6": "Full growth system",
-            "7": "Need guidance"
-        },
-        "service": {
-            "1": "More qualified leads",
-            "2": "Better authority content",
-            "3": "More consultation calls",
-            "4": "Ads and funnel system",
-            "5": "Personal brand positioning",
-            "6": "Full growth management",
-            "7": "Need guidance"
-        },
-        "other": {
-            "1": "More enquiries",
-            "2": "More sales",
-            "3": "Better content",
-            "4": "Better trust and positioning",
-            "5": "Ads and lead generation",
-            "6": "Full digital growth system",
-            "7": "Need guidance"
-        }
-    }
-
-    selected_map = goal_maps.get(category, goal_maps["other"])
-
-    if value in selected_map:
-        return selected_map[value]
-
-    for key, label in selected_map.items():
-        if label.lower() in value:
-            return label
-
-    return text.strip() if text.strip() else "Need guidance"
 
 
 def contact_request_message(business_type, goal):
     category = normalize_business_category(business_type)
 
+    if goal.lower() in ["need guidance", "guidance"]:
+        return (
+            "That is completely fine 👍\n\n"
+            "If you’re not sure, the right first step is to review your profile, content, trust signals and enquiry path together.\n\n"
+            "Where should our strategist contact you?\n"
+            "Send your WhatsApp number, email, or both."
+        )
+
+    if "full" in goal.lower() or "management" in goal.lower():
+        return (
+            "Full management makes sense if you want ClientBoost to handle the strategy, content direction, posting, lead flow and growth execution properly.\n\n"
+            "Before our team suggests the right scope, where should our strategist contact you?\n"
+            "Send your WhatsApp number, email, or both."
+        )
+
     if category == "restaurant":
-        base = (
-            "Understood.\n\n"
-            "For that goal, the first fix is not only posting food photos.\n"
+        return (
+            f"Understood — {goal}. ✅\n\n"
+            "For food businesses, the priority is not just posting food photos.\n"
             "The profile needs a clear offer, trust proof, menu access and a fast ordering path.\n\n"
-            "ClientBoost can help with:\n"
-            "• profile positioning\n"
-            "• food reels/content direction\n"
-            "• local offers\n"
-            "• WhatsApp ordering flow\n"
-            "• repeat customer strategy"
+            "Where should our strategist contact you?\n"
+            "Send your WhatsApp number, email, or both."
         )
-    elif category == "real_estate":
-        base = (
-            "Understood.\n\n"
-            "For that goal, the first fix is trust and clarity.\n"
-            "People will not enquire if the listing, location proof and next step are unclear.\n\n"
-            "ClientBoost can help with:\n"
-            "• listing content\n"
-            "• local authority positioning\n"
-            "• site-visit lead flow\n"
-            "• ads for buyers/investors\n"
-            "• follow-up automation"
+
+    if category == "real_estate":
+        return (
+            f"Understood — {goal}. ✅\n\n"
+            "For real estate, trust and clarity matter first.\n"
+            "People enquire when the property, location proof and next step are clear.\n\n"
+            "Where should our strategist contact you?\n"
+            "Send your WhatsApp number, email, or both."
         )
-    elif category == "salon_clinic":
-        base = (
-            "Understood.\n\n"
-            "For that goal, the first fix is trust, reviews and a simple booking path.\n"
-            "People need to feel safe before they book.\n\n"
-            "ClientBoost can help with:\n"
-            "• profile positioning\n"
-            "• trust-building content\n"
-            "• reels and offers\n"
-            "• appointment enquiry flow\n"
-            "• local ads when ready"
+
+    if category == "salon_clinic":
+        return (
+            f"Understood — {goal}. ✅\n\n"
+            "For appointment-based businesses, trust and a simple booking path matter most.\n"
+            "People need confidence before they book.\n\n"
+            "Where should our strategist contact you?\n"
+            "Send your WhatsApp number, email, or both."
         )
-    elif category == "gym":
-        base = (
-            "Understood.\n\n"
-            "For that goal, the first fix is proof and consistency.\n"
-            "People need to see transformation, coaching quality and a clear trial/joining path.\n\n"
-            "ClientBoost can help with:\n"
-            "• transformation content\n"
-            "• trial enquiry system\n"
-            "• local campaigns\n"
-            "• follow-up automation\n"
-            "• full Instagram management"
+
+    if category == "gym":
+        return (
+            f"Understood — {goal}. ✅\n\n"
+            "For gyms and fitness brands, proof, consistency and a clear trial/joining path are the first growth levers.\n\n"
+            "Where should our strategist contact you?\n"
+            "Send your WhatsApp number, email, or both."
         )
-    elif category == "ecommerce":
-        base = (
-            "Understood.\n\n"
-            "For that goal, the first fix is product trust and a faster buying path.\n"
-            "People should understand what to buy, why to trust it and how to order quickly.\n\n"
-            "ClientBoost can help with:\n"
-            "• product content\n"
-            "• offer strategy\n"
-            "• WhatsApp/order flow\n"
-            "• ads for conversions\n"
-            "• growth system"
-        )
-    else:
-        base = (
-            "Understood.\n\n"
-            "For that goal, the first fix is profile clarity, trust content and lead flow.\n"
-            "Once that foundation is clear, content and ads become much easier to scale.\n\n"
-            "ClientBoost can help with:\n"
-            "• strategy\n"
-            "• content direction\n"
-            "• branding\n"
-            "• ads\n"
-            "• automation\n"
-            "• conversion systems"
+
+    if category == "ecommerce":
+        return (
+            f"Understood — {goal}. ✅\n\n"
+            "For product brands, people need to quickly understand what to buy, why to trust it, and how to order.\n\n"
+            "Where should our strategist contact you?\n"
+            "Send your WhatsApp number, email, or both."
         )
 
     return (
-        f"{base}\n\n"
+        f"Understood — {goal}. ✅\n\n"
+        "The right first step is to fix profile clarity, trust content and enquiry flow before scaling with content or ads.\n\n"
         "Where should our strategist contact you?\n"
-        "You can send your WhatsApp number, email, or both."
+        "Send your WhatsApp number, email, or both."
     )
 
 
-# ============================================================
-# CONTACT + INTENT DETECTION
-# ============================================================
-
-def extract_email(text):
-    match = re.search(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", text or "")
-    return match.group(0) if match else ""
-
-
-def extract_phone(text):
-    if not text:
-        return ""
-
-    candidates = re.findall(r"(?:\+?\d[\d\s\-()]{7,}\d)", text)
-
-    for candidate in candidates:
-        digits = re.sub(r"\D", "", candidate)
-
-        if 10 <= len(digits) <= 15:
-            return candidate.strip()
-
-    return ""
+def pricing_reply():
+    return (
+        "Pricing depends on what you want handled.\n\n"
+        "There is a difference between:\n"
+        "• profile and strategy fix\n"
+        "• content management\n"
+        "• ads and lead generation\n"
+        "• full growth management\n\n"
+        "Send your WhatsApp number or email and our strategist will suggest the right scope after understanding your business."
+    )
 
 
-def is_interest_message(text):
-    value = str(text or "").lower()
+def contact_stage_reply(user_text, business_type, goal, data):
+    intent = classify_user_intent(user_text)
+    turns = int(data.get("conversion_turns", 0) or 0)
 
-    triggers = [
-        "help",
-        "interested",
-        "start",
-        "yes",
-        "call me",
-        "call",
-        "price",
-        "pricing",
-        "how much",
-        "what can you do",
-        "manage",
-        "i need help",
-        "need help",
-        "let's start",
-        "lets start",
-        "want to start"
-    ]
+    if intent == "pricing":
+        return pricing_reply()
 
-    return any(trigger in value for trigger in triggers)
+    if intent == "question":
+        if turns >= 1:
+            return (
+                "Simple answer: ClientBoost helps fix the parts that turn profile visitors into real enquiries — profile clarity, content direction, trust proof and lead flow.\n\n"
+                "To guide you properly, send your WhatsApp number or email and our strategist will continue from there."
+            )
 
-
-def is_stop_message(text):
-    value = str(text or "").lower().strip()
-    return value in ["stop", "cancel", "unsubscribe", "not interested"]
-
-
-def is_reset_message(text):
-    value = str(text or "").lower().strip()
-    return value in ["reset", "restart", "start over", "start again"]
-
-
-def is_continue_message(text):
-    value = str(text or "").lower().strip()
-    return value in ["continue", "yes continue", "continue audit", "send audit"]
-
-
-def is_complex_conversion_message(text):
-    value = str(text or "").lower()
-
-    complex_triggers = [
-        "how much",
-        "price",
-        "pricing",
-        "cost",
-        "budget",
-        "no budget",
-        "don't have budget",
-        "dont have budget",
-        "starting",
-        "just started",
-        "manage everything",
-        "what can you do",
-        "what will you do",
-        "need customers",
-        "need clients",
-        "ads",
-        "guarantee",
-        "result",
-        "plan",
-        "package"
-    ]
-
-    return any(trigger in value for trigger in complex_triggers)
-
-
-# ============================================================
-# CONVERSION ENGINE
-# ============================================================
-
-def scripted_conversion_reply(text, business_type, goal=""):
-    value = str(text or "").lower()
-
-    if "how much" in value or "price" in value or "pricing" in value or "cost" in value:
         return (
-            "Pricing depends on what you want handled.\n\n"
-            "There is a big difference between:\n"
-            "• profile + strategy fix\n"
-            "• content management\n"
-            "• ads + lead generation\n"
-            "• full growth system\n\n"
-            "To suggest the right option, tell me what you need most:\n"
-            "content, ads, or full management?"
+            "Good question.\n\n"
+            "We are asking for contact because your audit shows several areas that need proper context before suggesting a service: profile clarity, content direction, trust proof and enquiry flow.\n\n"
+            "A strategist can understand your business better and suggest the right starting point.\n\n"
+            "Send your WhatsApp number or email when ready."
         )
 
-    if "budget" in value and ("no" in value or "low" in value or "less" in value):
+    if intent == "full_management":
         return (
-            "That is fine.\n\n"
-            "If budget is tight, the wrong move is running ads too early.\n"
-            "The right first step is fixing profile clarity, trust content and the enquiry path so your existing traffic converts better.\n\n"
-            "Would you prefer a lean starting plan or full monthly management later?"
+            "Full management is where ClientBoost can handle the complete growth side: strategy, content direction, posting, lead flow, automation and conversion system.\n\n"
+            "Send your WhatsApp number or email and our strategist will understand your business properly before suggesting the right scope."
         )
 
-    if "starting" in value or "just started" in value or "new business" in value:
+    if intent == "delay":
         return (
-            "Good. Starting early is an advantage.\n\n"
-            "For a new business, the priority should be:\n"
-            "1. clear positioning\n"
-            "2. trust-building content\n"
-            "3. simple CTA\n"
-            "4. consistent posting system\n\n"
-            "You do not need complicated ads first.\n"
-            "You need a clean foundation.\n\n"
-            "Would you like our team to suggest the first 30-day plan?"
+            "No problem.\n\n"
+            "Your audit is still useful. When you’re ready, send your WhatsApp number or email and our team will guide you from there."
         )
 
-    if "manage" in value or "everything" in value:
+    if intent == "reject":
         return (
-            "Yes. That is exactly where ClientBoost fits.\n\n"
-            "We can help with strategy, content, branding, ads, automation and conversion systems.\n\n"
-            "Before our team takes over, send your WhatsApp number or email so we can understand your business properly and suggest the right scope."
+            "No problem. Your audit is yours to use.\n\n"
+            "You can come back anytime if you want help implementing it."
         )
 
-    if "ads" in value:
+    if turns >= MAX_CONVERSION_TURNS_BEFORE_CONTACT:
         return (
-            "Ads can work, but only after the foundation is clear.\n\n"
-            "If the profile, offer, content and lead flow are weak, ads usually waste money.\n\n"
-            "The smart path is:\n"
-            "1. fix positioning\n"
-            "2. build trust content\n"
-            "3. create a clear enquiry path\n"
-            "4. then scale with ads\n\n"
-            "Send your WhatsApp or email and our strategist will guide you on the right starting point."
+            "I’ll keep it simple.\n\n"
+            "If you want ClientBoost to help, send your WhatsApp number or email and our strategist will continue personally."
         )
 
     return (
-        "ClientBoost helps turn Instagram from a posting page into a growth channel.\n\n"
-        "Based on your audit, the first priority is:\n"
-        "profile clarity + trust proof + content direction + lead flow.\n\n"
-        "After that, we can scale with content, ads and automation.\n\n"
-        "What do you want help with first — content, ads, or full management?"
+        "ClientBoost can help with strategy, content direction, branding, ads, automation and conversion systems.\n\n"
+        "The best starting point depends on your business stage and goal.\n\n"
+        "Send your WhatsApp number or email and our strategist will guide you properly."
     )
-
-
-def generate_conversion_reply(sender_id, user_text, business_type, goal, lead_data):
-    # Use scripted replies first to protect API credits.
-    if not is_complex_conversion_message(user_text):
-        return scripted_conversion_reply(user_text, business_type, goal)
-
-    prompt = f"""
-You are the ClientBoost senior conversion strategist.
-
-Context:
-- The user already received a ClientBoost Instagram audit.
-- Business type: {business_type}
-- Selected goal: {goal}
-- Lead data: {json.dumps(lead_data, ensure_ascii=False)}
-
-User message:
-{user_text}
-
-Your job:
-Reply like a premium agency strategist.
-Keep the reply short enough for Instagram DM.
-Use business psychology, authority, clarity and objection handling.
-Do not overpromise.
-Do not guarantee results.
-Do not sound like a chatbot.
-Do not repeat the audit.
-Do not be pushy.
-Do not use fake urgency or fake scarcity.
-Do not reveal technical or AI details.
-Move the user toward sending WhatsApp/email or choosing a clear next step.
-
-Write only the DM reply.
-"""
-
-    result = generate_text_with_pool("conversion", [prompt])
-
-    if result.get("text"):
-        return result["text"]
-
-    return scripted_conversion_reply(user_text, business_type, goal)
 
 
 def final_handover_message():
     return (
-        "Got it. ✅\n\n"
-        "Your details are noted.\n"
+        "Perfect — noted ✅\n\n"
         "A ClientBoost strategist will take over from here.\n\n"
         "You can also send:\n"
         "• your current monthly marketing budget\n"
         "• your target customers\n"
-        "• what service you want help with first\n\n"
+        "• what you want help with first\n\n"
         "Our team will continue personally from here. 🤝"
     )
 
 
 # ============================================================
-# MESSAGE HANDLER
+# MAIN MESSAGE HANDLER
 # ============================================================
 
 def handle_message(sender_id, message_obj):
     sender_id = str(sender_id)
 
+    with get_user_lock(sender_id):
+        _handle_message_locked(sender_id, message_obj)
+
+
+def _handle_message_locked(sender_id, message_obj):
     raw_text = message_obj.get("text", "").strip()
-    text = raw_text.lower()
+    text = normalize_text(raw_text)
 
     attachments = message_obj.get("attachments", [])
     image_url = None
@@ -1922,25 +2061,27 @@ def handle_message(sender_id, message_obj):
     log_message(sender_id, "inbound", "image" if image_url else "text", raw_text or "[image]", step)
     update_last_user_message(sender_id)
 
-    if is_reset_message(text):
+    intent = classify_user_intent(raw_text)
+
+    if intent == "reset":
         reset_user(sender_id)
 
         send_dm(
             sender_id,
-            "Reset done.\n\n"
-            "Type GROWTH whenever you are ready for your free Instagram audit.",
+            "Reset done ✅\n\n"
+            "Type GROWTH whenever you’re ready for your free Instagram audit.",
             message_type="reset",
             state="new"
         )
         return
 
-    if is_continue_message(text):
+    if intent == "continue":
         refresh_pending_audit_window(sender_id)
 
         send_dm(
             sender_id,
-            "Thanks. Your audit request is active again ✅\n\n"
-            "No need to resend the screenshot. We’ll send the audit here automatically once analysis is available.",
+            "Thanks ✅\n\n"
+            "Your audit request is active again. No need to resend the screenshot.",
             message_type="continue_audit",
             state="audit_pending"
         )
@@ -1952,38 +2093,19 @@ def handle_message(sender_id, message_obj):
         print(f"Human handover active for {sender_id}. Bot ignored message.")
         return
 
-    if is_stop_message(text):
-        activate_handover(sender_id, reason="user_stopped", notes="User asked bot to stop")
+    if intent == "reject" and step in ["lead_goal", "lead_contact", "lead_timeline", "audit_sent"]:
+        save_state(sender_id, step="audit_sent", data=data, extra={"lead_temperature": "nurture"})
 
         send_dm(
             sender_id,
-            "No problem. We will stop the automated messages here.",
-            message_type="stop",
-            state="stopped"
+            "No problem. Your audit is yours to use.\n\n"
+            "You can come back anytime if you want help implementing it.",
+            message_type="not_interested",
+            state="audit_sent"
         )
         return
 
-    # Start lead conversion from audit.
-    if step in ["audit_sent", "lead_goal", "lead_contact", "lead_timeline"] and is_interest_message(text):
-        if step == "audit_sent":
-            business_type = data.get("type", "")
-            save_state(sender_id, step="lead_goal", data=data, extra={
-                "lead_temperature": "warm"
-            })
-
-            delayed_send_dm(
-                sender_id,
-                "Good move. 🤝\n\n"
-                "Based on your audit, the priority is not just posting more.\n"
-                "The priority is building a profile, content direction and lead-flow system that turns visitors into enquiries.\n\n"
-                + get_goal_menu(business_type),
-                delay=1.5,
-                message_type="lead_goal_menu",
-                state="lead_goal"
-            )
-            return
-
-    # Image received at correct step.
+    # Image at correct stage.
     if image_url and step == "ask_screenshot":
         data["image_url"] = image_url
 
@@ -1996,19 +2118,19 @@ def handle_message(sender_id, message_obj):
         )
         return
 
-    # Image received early.
+    # Image too early.
     if image_url and step != "ask_screenshot":
         send_dm(
             sender_id,
-            "Thanks for the image.\n\n"
-            "Type GROWTH first so I can start your free audit properly.",
+            "Thanks for the image 📸\n\n"
+            "Type GROWTH first so we can start your free audit properly.",
             message_type="image_early",
             state=step
         )
         return
 
     # Start audit flow.
-    if "growth" in text and step == "new":
+    if "growth" == text and step == "new":
         save_state(
             sender_id,
             step="ask_name",
@@ -2021,11 +2143,21 @@ def handle_message(sender_id, message_obj):
 
         send_dm(
             sender_id,
-            "Welcome to ClientBoost.\n\n"
-            "We will do a free Instagram audit for your business.\n\n"
-            "First, what is your business name?",
+            "Hey 👋 Welcome to ClientBoost.\n\n"
+            "We’ll review your Instagram profile and show what may be blocking more trust, enquiries and conversions.\n\n"
+            "First, what’s your business name?",
             message_type="ask_name",
             state="ask_name"
+        )
+        return
+
+    if "growth" == text and step != "new":
+        send_dm(
+            sender_id,
+            "You’re already inside the audit flow.\n\n"
+            "Please answer the current question, or type RESET to start again.",
+            message_type="already_in_flow",
+            state=step
         )
         return
 
@@ -2048,7 +2180,7 @@ def handle_message(sender_id, message_obj):
 
         send_dm(
             sender_id,
-            f"Got it — {raw_text}.\n\n"
+            f"Got it — {raw_text} ✅\n\n"
             "What type of business is it?\n\n"
             "Reply with one option:\n"
             "1. Restaurant\n"
@@ -2072,41 +2204,14 @@ def handle_message(sender_id, message_obj):
             send_dm(sender_id, "Please send your business type.", state=step)
             return
 
-        normalized = text.replace(".", "").strip()
-
-        type_map = {
-            "1": "Restaurant",
-            "restaurant": "Restaurant",
-            "2": "Cafe",
-            "cafe": "Cafe",
-            "3": "Salon",
-            "salon": "Salon",
-            "4": "Gym",
-            "gym": "Gym",
-            "5": "Boutique",
-            "boutique": "Boutique",
-            "6": "Clinic",
-            "clinic": "Clinic",
-            "7": "Real Estate",
-            "real estate": "Real Estate",
-            "realestate": "Real Estate",
-            "8": "E-commerce",
-            "ecommerce": "E-commerce",
-            "e-commerce": "E-commerce",
-            "9": "Personal Brand",
-            "personal brand": "Personal Brand",
-            "10": "Other",
-            "other": "Other"
-        }
-
-        selected_type = type_map.get(normalized, raw_text)
+        selected_type = parse_business_type(raw_text)
 
         if selected_type == "Other":
             save_state(sender_id, step="ask_other_type", data=data)
 
             send_dm(
                 sender_id,
-                "No problem.\n\n"
+                "No problem 👍\n\n"
                 "Please type your exact business type.\n\n"
                 "Example: dental clinic, car service, coaching, software company, interior design, etc.",
                 message_type="ask_other_type",
@@ -2127,7 +2232,7 @@ def handle_message(sender_id, message_obj):
 
         send_dm(
             sender_id,
-            f"{selected_type} — noted.\n\n"
+            f"{selected_type} — noted ✅\n\n"
             "Which city or country do you serve?",
             message_type="ask_location",
             state="ask_location"
@@ -2138,6 +2243,16 @@ def handle_message(sender_id, message_obj):
     if step == "ask_other_type":
         if len(raw_text) < 2:
             send_dm(sender_id, "Please type your exact business type.", state=step)
+            return
+
+        if text == "growth":
+            send_dm(
+                sender_id,
+                "Please type your exact business type, not the audit trigger.\n\n"
+                "Example: marketing agency, software company, car service, coaching, interior design, etc.",
+                message_type="ask_other_type_again",
+                state="ask_other_type"
+            )
             return
 
         data["type"] = raw_text
@@ -2153,7 +2268,7 @@ def handle_message(sender_id, message_obj):
 
         send_dm(
             sender_id,
-            f"{raw_text} — noted.\n\n"
+            f"{raw_text} — noted ✅\n\n"
             "Which city or country do you serve?",
             message_type="ask_location",
             state="ask_location"
@@ -2179,25 +2294,96 @@ def handle_message(sender_id, message_obj):
 
         send_dm(
             sender_id,
-            f"{raw_text} — perfect.\n\n"
+            f"{raw_text} — perfect ✅\n\n"
             "Now send a screenshot of your Instagram profile.\n\n"
             "Make sure it shows:\n"
-            "- Your bio\n"
-            "- Story highlights\n"
-            "- Follower count\n"
-            "- First few posts\n\n"
-            "Once you send it, we will analyse your profile and send your audit.",
+            "• your bio\n"
+            "• story highlights\n"
+            "• follower count\n"
+            "• first few posts\n\n"
+            "Once you send it, we’ll review your profile and send your audit.",
             message_type="ask_screenshot",
             state="ask_screenshot"
         )
         return
 
+    # After audit: user wants help / asks.
+    if step == "audit_sent":
+        if intent in ["proceed", "question", "pricing", "full_management", "general"]:
+            business_type = data.get("type", "")
+
+            data["conversion_turns"] = 0
+
+            save_state(
+                sender_id,
+                step="lead_goal",
+                data=data,
+                extra={
+                    "lead_temperature": "warm"
+                }
+            )
+
+            if intent == "pricing":
+                send_dm(
+                    sender_id,
+                    pricing_reply(),
+                    message_type="pricing_reply",
+                    state="lead_contact"
+                )
+                save_state(sender_id, step="lead_contact", data=data)
+                return
+
+            send_dm(
+                sender_id,
+                "Good move 🤝\n\n"
+                "The priority is not just posting more.\n"
+                "The priority is building a profile, content direction and enquiry path that turns visitors into real enquiries.\n\n"
+                + get_goal_menu(business_type),
+                message_type="lead_goal_menu",
+                state="lead_goal"
+            )
+            return
+
     # Lead goal selection.
     if step == "lead_goal":
         business_type = data.get("type", "")
-        goal = parse_goal(business_type, raw_text)
+        parsed = parse_goal(business_type, raw_text)
 
+        if parsed["type"] == "question":
+            send_dm(
+                sender_id,
+                explain_goal_question_message(business_type),
+                message_type="goal_question_explain",
+                state="lead_goal"
+            )
+            return
+
+        if parsed["type"] == "delay":
+            save_state(sender_id, step="audit_sent", data=data, extra={"lead_temperature": "nurture"})
+
+            send_dm(
+                sender_id,
+                "No problem.\n\n"
+                "Your audit is still useful. When you’re ready, send HELP and we’ll guide you from there.",
+                message_type="lead_delay",
+                state="audit_sent"
+            )
+            return
+
+        if parsed["type"] == "reject":
+            save_state(sender_id, step="audit_sent", data=data, extra={"lead_temperature": "nurture"})
+
+            send_dm(
+                sender_id,
+                "No problem. You can use the audit on your own for now.",
+                message_type="lead_reject",
+                state="audit_sent"
+            )
+            return
+
+        goal = parsed["goal"] or "Need guidance"
         data["goal"] = goal
+        data["conversion_turns"] = 0
 
         save_state(
             sender_id,
@@ -2213,36 +2399,35 @@ def handle_message(sender_id, message_obj):
         delayed_send_dm(
             sender_id,
             contact_request_message(business_type, goal),
-            delay=1.4,
+            delay=0.8,
             message_type="lead_contact_request",
             state="lead_contact"
         )
         return
 
-    # Lead contact collection.
+    # Contact collection.
     if step == "lead_contact":
         phone = extract_phone(raw_text)
         email = extract_email(raw_text)
 
-        update_data = {}
-
-        if phone:
-            update_data["whatsapp"] = phone
-            data["whatsapp"] = phone
-
-        if email:
-            update_data["email"] = email
-            data["email"] = email
-
         if phone or email:
+            extra = {
+                "lead_temperature": "hot"
+            }
+
+            if phone:
+                extra["whatsapp"] = phone
+                data["whatsapp"] = phone
+
+            if email:
+                extra["email"] = email
+                data["email"] = email
+
             save_state(
                 sender_id,
                 step="lead_timeline",
                 data=data,
-                extra={
-                    **update_data,
-                    "lead_temperature": "hot"
-                }
+                extra=extra
             )
 
             delayed_send_dm(
@@ -2250,16 +2435,23 @@ def handle_message(sender_id, message_obj):
                 "Got it ✅\n\n"
                 "One last thing so our strategist understands the urgency:\n\n"
                 "Are you looking to start immediately, this month, or later?",
-                delay=1.2,
+                delay=0.8,
                 message_type="lead_timeline",
                 state="lead_timeline"
             )
             return
 
-        # No contact given — answer intelligently and continue.
-        business_type = data.get("type", "")
-        goal = data.get("goal", "")
-        reply = generate_conversion_reply(sender_id, raw_text, business_type, goal, data)
+        turns = int(data.get("conversion_turns", 0) or 0)
+        data["conversion_turns"] = turns + 1
+
+        save_state(sender_id, step="lead_contact", data=data)
+
+        reply = contact_stage_reply(
+            user_text=raw_text,
+            business_type=data.get("type", ""),
+            goal=data.get("goal", ""),
+            data=data
+        )
 
         send_dm(
             sender_id,
@@ -2269,7 +2461,7 @@ def handle_message(sender_id, message_obj):
         )
         return
 
-    # Lead timeline / final handover.
+    # Timeline / final handover.
     if step == "lead_timeline":
         phone = extract_phone(raw_text)
         email = extract_email(raw_text)
@@ -2306,52 +2498,25 @@ def handle_message(sender_id, message_obj):
         activate_handover(
             sender_id,
             reason="lead_qualified",
-            notes="Lead provided goal/contact/timeline and is ready for human follow-up."
+            notes="Lead provided contact/timeline and is ready for human follow-up."
         )
         return
 
-    # If audit was sent and user replies with anything meaningful.
-    if step == "audit_sent":
-        if is_interest_message(text) or is_complex_conversion_message(text):
-            business_type = data.get("type", "")
-
-            save_state(
-                sender_id,
-                step="lead_goal",
-                data=data,
-                extra={
-                    "lead_temperature": "warm"
-                }
-            )
-
-            delayed_send_dm(
-                sender_id,
-                "Good move. 🤝\n\n"
-                "Based on your audit, the priority is not just posting more.\n"
-                "The priority is building a profile, content direction and lead-flow system that turns visitors into enquiries.\n\n"
-                + get_goal_menu(business_type),
-                delay=1.3,
-                message_type="lead_goal_menu",
-                state="lead_goal"
-            )
-            return
-
-    # Pending audit state.
+    # Pending audit.
     if step == "audit_pending":
         send_dm(
             sender_id,
-            "Your audit request is still saved 📌\n\n"
-            "No need to resend the screenshot.\n"
-            "We’ll send the audit here automatically once the analysis is available.",
+            "Your profile review is still saved 📌\n\n"
+            "No need to resend the screenshot. We’ll send your audit here once it is ready.",
             message_type="audit_pending_status",
             state="audit_pending"
         )
         return
 
-    # Default fallback.
+    # Fallback.
     send_dm(
         sender_id,
-        "Hi. Type GROWTH to get your free Instagram audit from ClientBoost.",
+        "Hi 👋 Type GROWTH to get your free Instagram audit from ClientBoost.",
         message_type="fallback",
         state=step
     )
@@ -2376,8 +2541,8 @@ def verify_webhook():
 
 @app.route("/webhook", methods=["POST"])
 def receive_webhook():
-    data = request.json
-    print("Webhook received:", json.dumps(data)[:1000])
+    data = request.json or {}
+    print("Webhook received:", json.dumps(data)[:1200])
 
     if data.get("object") == "instagram":
         for entry in data.get("entry", []):
@@ -2389,21 +2554,26 @@ def receive_webhook():
                 if not sender_id:
                     continue
 
-                # Echo messages can come from:
-                # 1. Our bot sending through API
-                # 2. Your team manually replying from Instagram inbox
+                mid = message_obj.get("mid")
+
+                if is_duplicate_message(mid):
+                    print(f"Duplicate message ignored: {mid}")
+                    continue
+
+                # Echo messages are our own outgoing messages or manual inbox replies.
+                # Default: ignore echo. Do not activate handover automatically.
                 if message_obj.get("is_echo"):
                     if recipient_id and is_recent_bot_echo(recipient_id):
                         print(f"Ignored recent bot echo for {recipient_id}")
                         continue
 
-                    if recipient_id:
+                    if AUTO_HANDOVER_ON_ECHO and recipient_id:
                         activate_handover(
                             recipient_id,
                             reason="manual_team_reply",
-                            notes="Human team replied from Instagram inbox."
+                            notes="Manual reply detected from inbox."
                         )
-                        print(f"Human handover activated from echo for {recipient_id}")
+                        print(f"Manual handover activated from echo for {recipient_id}")
 
                     continue
 
@@ -2438,8 +2608,15 @@ def retry_pending_audits_route():
 
 @app.route("/", methods=["GET"])
 def home():
+    start_background_retry_once()
     return "ClientBoost Bot is running", 200
 
+
+# ============================================================
+# STARTUP
+# ============================================================
+
+start_background_retry_once()
 
 # ============================================================
 # RUN

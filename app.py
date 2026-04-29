@@ -262,6 +262,34 @@ def compact_text(text):
     return text.strip()
 
 
+def fix_mojibake(text):
+    """
+    Repair broken UTF-8 text before sending Instagram DMs.
+    Examples:
+    - Ã°Å¸â€˜â€¹ -> ðŸ‘‹
+    - WeÃ¢â‚¬â„¢ll -> Weâ€™ll
+    - Ã¢â‚¬â€ -> â€”
+    - Ã¢Å“â€¦ -> âœ…
+    """
+    if text is None:
+        return ""
+
+    text = str(text)
+
+    bad_markers = [
+        "Ãƒ", "Ã‚", "Ã¢â‚¬", "Ã¢â‚¬â„¢", "Ã¢â‚¬Å“", "Ã¢â‚¬ï¿½", "Ã¢â‚¬â€œ", "Ã¢â‚¬â€",
+        "Ã°Å¸", "Ã¢Å“", "Ã¢Å¡", "Ã°Å¸â€œ", "Ã°Å¸Å¡", "Ã°Å¸Â¤", "Ã°Å¸â„¢"
+    ]
+
+    if not any(marker in text for marker in bad_markers):
+        return text
+
+    try:
+        return text.encode("cp1252").decode("utf-8")
+    except Exception:
+        return text
+
+
 def is_truthy(value):
     return str(value).strip().lower() in ["true", "yes", "1", "active"]
 
@@ -765,6 +793,7 @@ def update_last_bot_message(sender_id):
 
 def send_dm(recipient_id, message, message_type="bot", state=""):
     recipient_id = str(recipient_id)
+    message = fix_mojibake(message)
     message = compact_text(message)
 
     if not message:

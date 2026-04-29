@@ -2005,8 +2005,8 @@ def has_mockup_this_month(sender_id):
     used = []
     for record in records:
         if str(record.get("sender_id")) == str(sender_id) and str(record.get("month_key")) == month_key:
-            if str(record.get("status", "")).lower() in ["generated", "sent"]:
-                used.append(record)
+            if str(record.get("status", "")).lower() == "sent":
+    used.append(record)
 
     return len(used) >= IMAGE_MONTHLY_LIMIT_PER_USER
 

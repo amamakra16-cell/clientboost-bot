@@ -1,5 +1,5 @@
 # ============================================================
-# ClientBoost.in â€” Instagram DM Audit + Lead Conversion Engine
+# ClientBoost.in \u2014 Instagram DM Audit + Lead Conversion Engine
 # Free-core version: Gemini audit + Google Sheets CRM + Template Profile Preview
 # ============================================================
 
@@ -249,11 +249,10 @@ def seconds_since(value):
 # ============================================================
 
 def normalize_text(text):
-    text = str(text or "").lower().strip()
-    text = text.replace("â€™", "'")
+    text = fix_mojibake(str(text or ""))
+    text = text.lower().strip()
     text = re.sub(r"\s+", " ", text)
     return text
-
 
 def compact_text(text):
     text = str(text or "").strip()
@@ -264,31 +263,37 @@ def compact_text(text):
 
 def fix_mojibake(text):
     """
-    Repair broken UTF-8 text before sending Instagram DMs.
-    Examples:
-    - Ã°Å¸â€˜â€¹ -> ðŸ‘‹
-    - WeÃ¢â‚¬â„¢ll -> Weâ€™ll
-    - Ã¢â‚¬â€ -> â€”
-    - Ã¢Å“â€¦ -> âœ…
+    Repair broken UTF-8 / Windows-1252 mojibake before sending DMs.
+    This fixes text like:
+    - \xf0\u0178\u2018\u2039 -> \U0001f44b
+    - We\xe2\u20ac\u2122ll -> We\u2019ll
+    - \xe2\u20ac\u201d -> \u2014
+    - \xe2\u0153\u2026 -> \u2705
     """
     if text is None:
         return ""
 
     text = str(text)
-
-    bad_markers = [
-        "Ãƒ", "Ã‚", "Ã¢â‚¬", "Ã¢â‚¬â„¢", "Ã¢â‚¬Å“", "Ã¢â‚¬ï¿½", "Ã¢â‚¬â€œ", "Ã¢â‚¬â€",
-        "Ã°Å¸", "Ã¢Å“", "Ã¢Å¡", "Ã°Å¸â€œ", "Ã°Å¸Å¡", "Ã°Å¸Â¤", "Ã°Å¸â„¢"
-    ]
+    bad_markers = ["\xf0", "\xe2", "\xc3", "\xc2", "\xef\xb8"]
 
     if not any(marker in text for marker in bad_markers):
         return text
 
+    raw = bytearray()
+    for ch in text:
+        try:
+            raw.extend(ch.encode("cp1252"))
+        except UnicodeEncodeError:
+            code = ord(ch)
+            if code <= 255:
+                raw.append(code)
+            else:
+                raw.extend(ch.encode("utf-8"))
+
     try:
-        return text.encode("cp1252").decode("utf-8")
+        return bytes(raw).decode("utf-8")
     except Exception:
         return text
-
 
 def is_truthy(value):
     return str(value).strip().lower() in ["true", "yes", "1", "active"]
@@ -1210,7 +1215,7 @@ def get_goal_options(business_type):
 
 
 def get_goal_menu(business_type):
-    lines = ["What do you want most right now? ðŸ‘‡", ""]
+    lines = ["What do you want most right now? \U0001f447", ""]
 
     for number, label, _keywords in get_goal_options(business_type):
         lines.append(f"{number}. {label}")
@@ -1381,33 +1386,33 @@ Output rules:
 
 Structure exactly like this:
 
-ðŸŽ¯ CLIENTBOOST INSTAGRAM AUDIT
+\U0001f3af CLIENTBOOST INSTAGRAM AUDIT
 
-ðŸ¢ Business: {name}
-ðŸ“ Location: {location}
-ðŸ·ï¸ Category: {business_type}
+\U0001f3e2 Business: {name}
+\U0001f4cd Location: {location}
+\U0001f3f7\ufe0f Category: {business_type}
 
 Quick verdict:
 Give 2 short lines: strongest visible asset and biggest visible growth blocker.
 
-ðŸ“Š 1. Visible Profile Score
+\U0001f4ca 1. Visible Profile Score
 Score: X/100
 
 Sub-scores:
-â€¢ Bio clarity: X/15
-â€¢ Offer/positioning: X/15
-â€¢ Trust/highlights: X/15
-â€¢ Content/grid: X/20
-â€¢ Lead path: X/20
-â€¢ Local/search clarity: X/10
-â€¢ Brand consistency: X/5
+\u2022 Bio clarity: X/15
+\u2022 Offer/positioning: X/15
+\u2022 Trust/highlights: X/15
+\u2022 Content/grid: X/20
+\u2022 Lead path: X/20
+\u2022 Local/search clarity: X/10
+\u2022 Brand consistency: X/5
 
 Why this score:
-â€¢ reason based on screenshot
-â€¢ reason based on screenshot
-â€¢ reason based on screenshot
+\u2022 reason based on screenshot
+\u2022 reason based on screenshot
+\u2022 reason based on screenshot
 
-âœï¸ 2. Bio & Positioning
+\u270d\ufe0f 2. Bio & Positioning
 Current issue:
 Short explanation.
 
@@ -1415,55 +1420,55 @@ Better bio idea:
 Write one improved bio for this exact business.
 
 Why it works:
-â€¢ reason
-â€¢ reason
-â€¢ reason
+\u2022 reason
+\u2022 reason
+\u2022 reason
 
-ðŸ“¸ 3. Content & Grid
+\U0001f4f8 3. Content & Grid
 Working well:
-â€¢ point
-â€¢ point
+\u2022 point
+\u2022 point
 
 Improve:
-â€¢ point
-â€¢ point
+\u2022 point
+\u2022 point
 
 Post ideas:
-â€¢ idea 1
-â€¢ idea 2
-â€¢ idea 3
+\u2022 idea 1
+\u2022 idea 2
+\u2022 idea 3
 
-â­ 4. Trust & Highlights
+\u2b50 4. Trust & Highlights
 Current issue:
 Short explanation.
 
 Recommended highlights:
-â€¢ Services/Menu
-â€¢ Reviews/Results
-â€¢ How It Works
-â€¢ FAQ
-â€¢ Contact/Book Now
+\u2022 Services/Menu
+\u2022 Reviews/Results
+\u2022 How It Works
+\u2022 FAQ
+\u2022 Contact/Book Now
 
 Best trust fix:
 One practical action.
 
-ðŸ“ 5. Local Reach
+\U0001f4cd 5. Local Reach
 Current issue:
 Short explanation.
 
 Fixes:
-â€¢ location keyword idea
-â€¢ local content idea
-â€¢ hashtag/search idea
+\u2022 location keyword idea
+\u2022 local content idea
+\u2022 hashtag/search idea
 
-ðŸ’¬ 6. Lead Flow
+\U0001f4ac 6. Lead Flow
 Current issue:
 Explain what may stop people from contacting them.
 
 Best next step:
 Give the best natural next step for their business. Do not call it CTA.
 
-ðŸ—“ï¸ 7. 7-Day Action Plan
+\U0001f5d3\ufe0f 7. 7-Day Action Plan
 Day 1: one action
 Day 2: one action
 Day 3: one action
@@ -1472,7 +1477,7 @@ Day 5: one action
 Day 6: one action
 Day 7: one action
 
-ðŸ Final verdict
+\U0001f3c1 Final verdict
 Give one honest final line and one priority move.
 """
 
@@ -1643,11 +1648,11 @@ def send_audit_to_user(sender_id, audit_id, name, business_type, location, audit
     audit_text = clean_ai_text_for_instagram(audit_text, business_type)
 
     intro = (
-        "Your ClientBoost audit is ready âœ…\n\n"
-        f"ðŸ¢ Business: {name}\n"
-        f"ðŸ·ï¸ Type: {business_type}\n"
-        f"ðŸ“ Location: {location}\n\n"
-        "Hereâ€™s the clear breakdown:"
+        "Your ClientBoost audit is ready \u2705\n\n"
+        f"\U0001f3e2 Business: {name}\n"
+        f"\U0001f3f7\ufe0f Type: {business_type}\n"
+        f"\U0001f4cd Location: {location}\n\n"
+        "Here\u2019s the clear breakdown:"
     )
 
     send_dm(sender_id, intro, message_type="audit_intro", state="audit_sent")
@@ -1672,10 +1677,10 @@ def process_audit_request(sender_id, data, image_url, first_time=True, from_retr
     if first_time:
         send_dm(
             sender_id,
-            "Screenshot received ðŸ“¸\n\n"
-            "Weâ€™re reviewing your Instagram profile now.\n\n"
-            "Youâ€™ll get a clear audit covering profile clarity, content, trust, local reach and enquiry flow.\n\n"
-            "This usually takes a short moment â³",
+            "Screenshot received \U0001f4f8\n\n"
+            "We\u2019re reviewing your Instagram profile now.\n\n"
+            "You\u2019ll get a clear audit covering profile clarity, content, trust, local reach and enquiry flow.\n\n"
+            "This usually takes a short moment \u23f3",
             message_type="audit_processing",
             state="audit_processing"
         )
@@ -1686,7 +1691,7 @@ def process_audit_request(sender_id, data, image_url, first_time=True, from_retr
         if not from_retry:
             send_dm(
                 sender_id,
-                "The screenshot did not load properly.\n\nPlease send it once more and weâ€™ll continue.",
+                "The screenshot did not load properly.\n\nPlease send it once more and we\u2019ll continue.",
                 message_type="image_error",
                 state="ask_screenshot"
             )
@@ -1723,7 +1728,7 @@ def process_audit_request(sender_id, data, image_url, first_time=True, from_retr
     if not from_retry:
         send_dm(
             sender_id,
-            "Your profile review is saved ðŸ“Œ\n\n"
+            "Your profile review is saved \U0001f4cc\n\n"
             "It is taking a little longer than usual, but no need to resend anything.\n\n"
             "Your audit will be sent here automatically once it is ready.",
             message_type="audit_queued",
@@ -1803,7 +1808,7 @@ def retry_pending_audits(limit_sender_id=None):
     return {"processed": processed, "sent": sent, "warnings": warnings, "waiting_user": waiting}
 
 # ============================================================
-# TEMPLATE PROFILE PREVIEW RENDERER â€” NO IMAGE API USED
+# TEMPLATE PROFILE PREVIEW RENDERER \u2014 NO IMAGE API USED
 # ============================================================
 
 PREVIEW_STYLES = {
@@ -1839,7 +1844,7 @@ def parse_preview_style(text):
 
 def get_preview_options_message():
     return (
-        "Choose a profile preview style ðŸ‘‡\n\n"
+        "Choose a profile preview style \U0001f447\n\n"
         "1. Clean Premium Grid\n"
         "2. Trust + Proof Grid\n"
         "3. Product / Service Showcase\n"
@@ -1916,38 +1921,38 @@ def suggested_bio_lines(name, business_type, location):
     if category == "restaurant":
         return [
             f"{name} | {location} Food",
-            "Fresh orders â€¢ Offers â€¢ Reviews",
+            "Fresh orders \u2022 Offers \u2022 Reviews",
             "Menu + WhatsApp ordering below"
         ]
     if category == "salon_clinic":
         return [
             f"{name} | {location}",
-            "Services â€¢ Results â€¢ Reviews",
+            "Services \u2022 Results \u2022 Reviews",
             "Book your appointment below"
         ]
     if category == "real_estate":
         return [
             f"{name} | {location} Properties",
-            "Listings â€¢ Site visits â€¢ Buyer guidance",
+            "Listings \u2022 Site visits \u2022 Buyer guidance",
             "DM SITE for current options"
         ]
     if category == "gym":
         return [
             f"{name} | Fitness in {location}",
-            "Transformations â€¢ Training â€¢ Trials",
+            "Transformations \u2022 Training \u2022 Trials",
             "Book a trial session below"
         ]
     if category == "ecommerce":
         return [
             f"{name} | Online Store",
-            "New drops â€¢ Reviews â€¢ Offers",
+            "New drops \u2022 Reviews \u2022 Offers",
             "DM CATALOG or order on WhatsApp"
         ]
 
     return [
         f"{name} | {business_type}",
         f"Helping customers in {location}",
-        "Proof â€¢ Services â€¢ Contact below"
+        "Proof \u2022 Services \u2022 Contact below"
     ]
 
 
@@ -2002,7 +2007,7 @@ def render_profile_mockup(sender_id, data, style_id):
 
     # Header
     draw.text((60, 50), "ClientBoost Profile Preview", font=title_font, fill=text_color)
-    draw.text((60, 110), "Strategic visual direction â€” not a final design", font=subtitle_font, fill=muted)
+    draw.text((60, 110), "Strategic visual direction \u2014 not a final design", font=subtitle_font, fill=muted)
 
     # Phone/profile card
     card_x, card_y, card_w, card_h = 70, 180, 940, 1320
@@ -2010,7 +2015,7 @@ def render_profile_mockup(sender_id, data, style_id):
 
     # Top bar
     draw.text((card_x + 50, card_y + 40), name[:28], font=bold_body, fill=text_color)
-    draw.text((card_x + 50, card_y + 78), f"{business_type} â€¢ {location}", font=small_font, fill=muted)
+    draw.text((card_x + 50, card_y + 78), f"{business_type} \u2022 {location}", font=small_font, fill=muted)
 
     # Profile circle
     accent = colors["accent"]
@@ -2036,7 +2041,7 @@ def render_profile_mockup(sender_id, data, style_id):
     # Style and enquiry path pill
     pill_y = bio_y + 15
     draw.rounded_rectangle((card_x + 55, pill_y, card_x + 885, pill_y + 70), radius=22, fill=colors["soft"])
-    pill_text = f"Style: {style_name}  â€¢  Next step: {natural_next_step_for_business(business_type)}"
+    pill_text = f"Style: {style_name}  \u2022  Next step: {natural_next_step_for_business(business_type)}"
     draw_text_block(draw, pill_text, (card_x + 80, pill_y + 18), small_font, text_color, 770, line_gap=4)
 
     # Highlight bubbles
@@ -2106,7 +2111,7 @@ def create_and_send_profile_preview(sender_id, style_id):
     if has_mockup_this_month(sender_id):
         send_dm(
             sender_id,
-            "You already received your free profile preview this month âœ…\n\n"
+            "You already received your free profile preview this month \u2705\n\n"
             "Use it as your direction for improving the page. If you want our team to implement it, send HELP.",
             message_type="mockup_limit",
             state="audit_sent"
@@ -2147,7 +2152,7 @@ def create_and_send_profile_preview(sender_id, style_id):
 
         send_dm(
             sender_id,
-            "Creating your profile preview now âœ…\n\n"
+            "Creating your profile preview now \u2705\n\n"
             "This is a strategic visual direction, not a final design.",
             message_type="mockup_processing",
             state="preview_style"
@@ -2159,7 +2164,7 @@ def create_and_send_profile_preview(sender_id, style_id):
                 sender_id,
                 image_url,
                 caption=(
-                    "Here is your profile preview direction ðŸ‘†\n\n"
+                    "Here is your profile preview direction \U0001f446\n\n"
                     "It shows the improved structure: bio, highlights, content grid and enquiry path.\n\n"
                     "If you want ClientBoost to build this properly, send HELP."
                 ),
@@ -2176,7 +2181,7 @@ def create_and_send_profile_preview(sender_id, style_id):
             send_dm(
                 sender_id,
                 "Your preview direction is ready, but our team needs to connect the public preview link once.\n\n"
-                "Send HELP and weâ€™ll continue manually.",
+                "Send HELP and we\u2019ll continue manually.",
                 message_type="mockup_base_url_missing",
                 state="audit_sent"
             )
@@ -2206,8 +2211,8 @@ def create_and_send_profile_preview(sender_id, style_id):
 
 def explain_goal_question_message(_business_type):
     return (
-        "No issue ðŸ‘\n\n"
-        "This question helps us understand what kind of help you need first, so we donâ€™t suggest random services.\n\n"
+        "No issue \U0001f44d\n\n"
+        "This question helps us understand what kind of help you need first, so we don\u2019t suggest random services.\n\n"
         "You can reply with a number, or just type it in words.\n\n"
         "Example: content, ads, orders, leads, bookings, or full management."
     )
@@ -2218,8 +2223,8 @@ def contact_request_message(business_type, goal):
 
     if goal.lower() in ["need guidance", "guidance"]:
         return (
-            "That is completely fine ðŸ‘\n\n"
-            "If youâ€™re not sure, the right first step is to review your profile, content, trust signals and enquiry path together.\n\n"
+            "That is completely fine \U0001f44d\n\n"
+            "If you\u2019re not sure, the right first step is to review your profile, content, trust signals and enquiry path together.\n\n"
             "Where should our strategist contact you?\n"
             "Send your WhatsApp number, email, or both."
         )
@@ -2233,27 +2238,27 @@ def contact_request_message(business_type, goal):
 
     if category == "restaurant":
         return (
-            f"Understood â€” {goal}. âœ…\n\n"
+            f"Understood \u2014 {goal}. \u2705\n\n"
             "For food businesses, the priority is not just posting food photos. The profile needs a clear offer, trust proof, menu access and a fast ordering path.\n\n"
             "Where should our strategist contact you?\nSend your WhatsApp number, email, or both."
         )
 
     if category == "real_estate":
         return (
-            f"Understood â€” {goal}. âœ…\n\n"
+            f"Understood \u2014 {goal}. \u2705\n\n"
             "For real estate, trust and clarity matter first. People enquire when the property, location proof and next step are clear.\n\n"
             "Where should our strategist contact you?\nSend your WhatsApp number, email, or both."
         )
 
     if category == "salon_clinic":
         return (
-            f"Understood â€” {goal}. âœ…\n\n"
+            f"Understood \u2014 {goal}. \u2705\n\n"
             "For appointment-based businesses, trust and a simple booking path matter most. People need confidence before they book.\n\n"
             "Where should our strategist contact you?\nSend your WhatsApp number, email, or both."
         )
 
     return (
-        f"Understood â€” {goal}. âœ…\n\n"
+        f"Understood \u2014 {goal}. \u2705\n\n"
         "The right first step is to fix profile clarity, trust content and enquiry flow before scaling with content or ads.\n\n"
         "Where should our strategist contact you?\nSend your WhatsApp number, email, or both."
     )
@@ -2263,10 +2268,10 @@ def pricing_reply():
     return (
         "Pricing depends on what you want handled.\n\n"
         "There is a difference between:\n"
-        "â€¢ profile and strategy fix\n"
-        "â€¢ content management\n"
-        "â€¢ ads and lead generation\n"
-        "â€¢ full growth management\n\n"
+        "\u2022 profile and strategy fix\n"
+        "\u2022 content management\n"
+        "\u2022 ads and lead generation\n"
+        "\u2022 full growth management\n\n"
         "Send your WhatsApp number or email and our strategist will suggest the right scope after understanding your business."
     )
 
@@ -2281,7 +2286,7 @@ def contact_stage_reply(user_text, business_type, goal, data):
     if intent == "question":
         if turns >= 1:
             return (
-                "Simple answer: ClientBoost helps fix the parts that turn profile visitors into real enquiries â€” profile clarity, content direction, trust proof and lead flow.\n\n"
+                "Simple answer: ClientBoost helps fix the parts that turn profile visitors into real enquiries \u2014 profile clarity, content direction, trust proof and lead flow.\n\n"
                 "To guide you properly, send your WhatsApp number or email and our strategist will continue from there."
             )
 
@@ -2300,7 +2305,7 @@ def contact_stage_reply(user_text, business_type, goal, data):
     if intent == "delay":
         return (
             "No problem.\n\n"
-            "Your audit is still useful. When youâ€™re ready, send your WhatsApp number or email and our team will guide you from there."
+            "Your audit is still useful. When you\u2019re ready, send your WhatsApp number or email and our team will guide you from there."
         )
 
     if intent == "reject":
@@ -2311,7 +2316,7 @@ def contact_stage_reply(user_text, business_type, goal, data):
 
     if turns >= MAX_CONVERSION_TURNS_BEFORE_CONTACT:
         return (
-            "Iâ€™ll keep it simple.\n\n"
+            "I\u2019ll keep it simple.\n\n"
             "If you want ClientBoost to help, send your WhatsApp number or email and our strategist will continue personally."
         )
 
@@ -2324,13 +2329,13 @@ def contact_stage_reply(user_text, business_type, goal, data):
 
 def final_handover_message():
     return (
-        "Perfect â€” noted âœ…\n\n"
+        "Perfect \u2014 noted \u2705\n\n"
         "A ClientBoost strategist will take over from here.\n\n"
         "You can also send:\n"
-        "â€¢ your current monthly marketing budget\n"
-        "â€¢ your target customers\n"
-        "â€¢ what you want help with first\n\n"
-        "Our team will continue personally from here. ðŸ¤"
+        "\u2022 your current monthly marketing budget\n"
+        "\u2022 your target customers\n"
+        "\u2022 what you want help with first\n\n"
+        "Our team will continue personally from here. \U0001f91d"
     )
 
 # ============================================================
@@ -2367,12 +2372,12 @@ def _handle_message_locked(sender_id, message_obj):
 
     if intent == "reset":
         reset_user(sender_id)
-        send_dm(sender_id, "Reset done âœ…\n\nType GROWTH whenever youâ€™re ready for your free Instagram audit.", message_type="reset", state="new")
+        send_dm(sender_id, "Reset done \u2705\n\nType GROWTH whenever you\u2019re ready for your free Instagram audit.", message_type="reset", state="new")
         return
 
     if intent == "continue":
         refresh_pending_audit_window(sender_id)
-        send_dm(sender_id, "Thanks âœ…\n\nYour audit request is active again. No need to resend the screenshot.", message_type="continue_audit", state="audit_pending")
+        send_dm(sender_id, "Thanks \u2705\n\nYour audit request is active again. No need to resend the screenshot.", message_type="continue_audit", state="audit_pending")
         retry_pending_audits(limit_sender_id=sender_id)
         return
 
@@ -2410,7 +2415,7 @@ def _handle_message_locked(sender_id, message_obj):
             process_audit_request(sender_id, data, image_url, first_time=True, from_retry=False)
             return
 
-        send_dm(sender_id, "Thanks for the image ðŸ“¸\n\nType GROWTH first so we can start your free audit properly.", message_type="image_early", state=step)
+        send_dm(sender_id, "Thanks for the image \U0001f4f8\n\nType GROWTH first so we can start your free audit properly.", message_type="image_early", state=step)
         return
 
     # Start audit flow.
@@ -2418,16 +2423,16 @@ def _handle_message_locked(sender_id, message_obj):
         save_state(sender_id, step="ask_name", data={}, extra={"lead_temperature": "new", "handover_status": "none"})
         send_dm(
             sender_id,
-            "Hey ðŸ‘‹ Welcome to ClientBoost.\n\n"
-            "Weâ€™ll review your Instagram profile and show what may be blocking more trust, enquiries and conversions.\n\n"
-            "First, whatâ€™s your business name?",
+            "Hey \U0001f44b Welcome to ClientBoost.\n\n"
+            "We\u2019ll review your Instagram profile and show what may be blocking more trust, enquiries and conversions.\n\n"
+            "First, what\u2019s your business name?",
             message_type="ask_name",
             state="ask_name"
         )
         return
 
     if text == "growth" and step != "new":
-        send_dm(sender_id, "Youâ€™re already inside the audit flow.\n\nPlease answer the current question, or type RESET to start again.", message_type="already_in_flow", state=step)
+        send_dm(sender_id, "You\u2019re already inside the audit flow.\n\nPlease answer the current question, or type RESET to start again.", message_type="already_in_flow", state=step)
         return
 
     # Ask business name.
@@ -2441,7 +2446,7 @@ def _handle_message_locked(sender_id, message_obj):
 
         send_dm(
             sender_id,
-            f"Got it â€” {raw_text} âœ…\n\n"
+            f"Got it \u2014 {raw_text} \u2705\n\n"
             "What type of business is it?\n\n"
             "Reply with one option:\n"
             "1. Restaurant\n"
@@ -2471,7 +2476,7 @@ def _handle_message_locked(sender_id, message_obj):
             save_state(sender_id, step="ask_other_type", data=data)
             send_dm(
                 sender_id,
-                "No problem ðŸ‘\n\n"
+                "No problem \U0001f44d\n\n"
                 "Please type your exact business type.\n\n"
                 "Example: dental clinic, car service, coaching, software company, interior design, etc.",
                 message_type="ask_other_type",
@@ -2481,7 +2486,7 @@ def _handle_message_locked(sender_id, message_obj):
 
         data["type"] = selected_type
         save_state(sender_id, step="ask_location", data=data, extra={"business_type": selected_type})
-        send_dm(sender_id, f"{selected_type} â€” noted âœ…\n\nWhich city or country do you serve?", message_type="ask_location", state="ask_location")
+        send_dm(sender_id, f"{selected_type} \u2014 noted \u2705\n\nWhich city or country do you serve?", message_type="ask_location", state="ask_location")
         return
 
     # Exact business type after Other.
@@ -2502,7 +2507,7 @@ def _handle_message_locked(sender_id, message_obj):
 
         data["type"] = raw_text
         save_state(sender_id, step="ask_location", data=data, extra={"business_type": raw_text})
-        send_dm(sender_id, f"{raw_text} â€” noted âœ…\n\nWhich city or country do you serve?", message_type="ask_location", state="ask_location")
+        send_dm(sender_id, f"{raw_text} \u2014 noted \u2705\n\nWhich city or country do you serve?", message_type="ask_location", state="ask_location")
         return
 
     # Ask location.
@@ -2516,14 +2521,14 @@ def _handle_message_locked(sender_id, message_obj):
 
         send_dm(
             sender_id,
-            f"{raw_text} â€” perfect âœ…\n\n"
+            f"{raw_text} \u2014 perfect \u2705\n\n"
             "Now send a screenshot of your Instagram profile.\n\n"
             "Make sure it shows:\n"
-            "â€¢ your bio\n"
-            "â€¢ story highlights\n"
-            "â€¢ follower count\n"
-            "â€¢ first few posts\n\n"
-            "Once you send it, weâ€™ll review your profile and send your audit.",
+            "\u2022 your bio\n"
+            "\u2022 story highlights\n"
+            "\u2022 follower count\n"
+            "\u2022 first few posts\n\n"
+            "Once you send it, we\u2019ll review your profile and send your audit.",
             message_type="ask_screenshot",
             state="ask_screenshot"
         )
@@ -2559,7 +2564,7 @@ def _handle_message_locked(sender_id, message_obj):
 
             send_dm(
                 sender_id,
-                "Good move ðŸ¤\n\n"
+                "Good move \U0001f91d\n\n"
                 "The priority is not just posting more.\n"
                 "The priority is building a profile, content direction and enquiry path that turns visitors into real enquiries.\n\n"
                 + get_goal_menu(business_type),
@@ -2579,7 +2584,7 @@ def _handle_message_locked(sender_id, message_obj):
 
         if parsed["type"] == "delay":
             save_state(sender_id, step="audit_sent", data=data, extra={"lead_temperature": "nurture"})
-            send_dm(sender_id, "No problem.\n\nYour audit is still useful. When youâ€™re ready, send HELP and weâ€™ll guide you from there.", message_type="lead_delay", state="audit_sent")
+            send_dm(sender_id, "No problem.\n\nYour audit is still useful. When you\u2019re ready, send HELP and we\u2019ll guide you from there.", message_type="lead_delay", state="audit_sent")
             return
 
         if parsed["type"] == "reject":
@@ -2613,7 +2618,7 @@ def _handle_message_locked(sender_id, message_obj):
             save_state(sender_id, step="lead_timeline", data=data, extra=extra)
             delayed_send_dm(
                 sender_id,
-                "Got it âœ…\n\n"
+                "Got it \u2705\n\n"
                 "One last thing so our strategist understands the urgency:\n\n"
                 "Are you looking to start immediately, this month, or later?",
                 delay=0.8,
@@ -2655,14 +2660,14 @@ def _handle_message_locked(sender_id, message_obj):
     if step == "audit_pending":
         send_dm(
             sender_id,
-            "Your profile review is still saved ðŸ“Œ\n\nNo need to resend the screenshot. Weâ€™ll send your audit here once it is ready.",
+            "Your profile review is still saved \U0001f4cc\n\nNo need to resend the screenshot. We\u2019ll send your audit here once it is ready.",
             message_type="audit_pending_status",
             state="audit_pending"
         )
         return
 
     # Fallback.
-    send_dm(sender_id, "Hi ðŸ‘‹ Type GROWTH to get your free Instagram audit from ClientBoost.", message_type="fallback", state=step)
+    send_dm(sender_id, "Hi \U0001f44b Type GROWTH to get your free Instagram audit from ClientBoost.", message_type="fallback", state=step)
 
 # ============================================================
 # BACKGROUND RETRY

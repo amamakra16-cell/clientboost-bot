@@ -89,6 +89,7 @@ AUTO_HANDOVER_ON_ECHO = os.environ.get("AUTO_HANDOVER_ON_ECHO", "false").lower()
 
 MAX_CONVERSION_TURNS_BEFORE_CONTACT = int(os.environ.get("MAX_CONVERSION_TURNS_BEFORE_CONTACT", "2"))
 IMAGE_MONTHLY_LIMIT_PER_USER = int(os.environ.get("IMAGE_MONTHLY_LIMIT_PER_USER", "1"))
+MONTHLY_AUDIT_LIMIT_PER_USER = int(os.environ.get("MONTHLY_AUDIT_LIMIT_PER_USER", "1"))
 MOCKUP_OUTPUT_DIR = Path(os.environ.get("MOCKUP_OUTPUT_DIR", "generated_mockups"))
 MOCKUP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -109,6 +110,7 @@ recent_bot_sends = {}
 api_cooldowns = {}
 user_locks = {}
 seen_message_ids = {}
+runtime_state_cache = {}
 
 background_retry_started = False
 
@@ -651,10 +653,17 @@ def get_lead(sender_id):
 
 def get_state(sender_id):
     sender_id = str(sender_id)
+
+    cached = runtime_state_cache.get(sender_id)
+    if cached:
+        return cached
+
     lead = get_lead(sender_id)
 
     if not lead:
-        return {"step": "new", "data": {}, "handover": False, "lead": {}}
+        state = {"step": "new", "data": {}, "handover": False, "lead": {}}
+        runtime_state_cache[sender_id] = state
+        return state
 
     try:
         data = json.loads(lead.get("data_json", "{}") or "{}")
@@ -668,12 +677,15 @@ def get_state(sender_id):
     if handover_row and is_truthy(handover_row.get("handover_active", "")):
         handover_active = True
 
-    return {
+    state = {
         "step": lead.get("conversation_state") or "new",
         "data": data,
         "handover": handover_active,
         "lead": lead
     }
+
+    runtime_state_cache[sender_id] = state
+    return state
 
 
 def calculate_lead_score(step, data):
@@ -702,6 +714,58 @@ def calculate_lead_score(step, data):
 def save_state(sender_id, step=None, data=None, extra=None):
     sender_id = str(sender_id)
 
+    current = runtime_state_cache.get(sender_id)
+
+    if not current:
+        lead = get_record("Leads", "sender_id", sender_id)
+
+        if lead:
+            try:
+                existing_data = json.loads(lead.get("data_json", "{}") or "{}")
+            except Exception:
+                existing_data = {}
+
+            handover_active = str(lead.get("handover_status", "")).lower() == "active"
+
+            handover_row = get_record("Handover_Status", "sender_id", sender_id)
+            if handover_row and is_truthy(handover_row.get("handover_active", "")):
+                handover_active = True
+
+            current = {
+                "step": lead.get("conversation_state") or "new",
+                "data": existing_data,
+                "handover": handover_active,
+                "lead": lead
+            }
+        else:
+            current = {
+                "step": "new",
+                "data": {},
+                "handover": False,
+                "lead": {}
+            }
+
+    final_step = step if step is not None else current.get("step", "new")
+    final_data = data if data is not None else current.get("data", {})
+
+    final_handover = current.get("handover", False)
+
+    if extra and str(extra.get("handover_status", "")).lower() == "active":
+        final_handover = True
+
+    if final_step == "human_handover":
+        final_handover = True
+
+    if extra and "handover_status" in extra and str(extra.get("handover_status", "")).lower() in ["none", "false", ""]:
+        final_handover = False
+
+    runtime_state_cache[sender_id] = {
+        "step": final_step,
+        "data": final_data,
+        "handover": final_handover,
+        "lead": current.get("lead", {})
+    }
+
     update_data = {"updated_at": now_iso()}
 
     if step is not None:
@@ -709,16 +773,35 @@ def save_state(sender_id, step=None, data=None, extra=None):
 
     if data is not None:
         update_data["data_json"] = json.dumps(data, ensure_ascii=False)
-        update_data["lead_score"] = calculate_lead_score(step or get_state(sender_id).get("step", "new"), data)
+        update_data["lead_score"] = calculate_lead_score(final_step, data)
 
     if extra:
         update_data.update(extra)
 
-    upsert_record("Leads", "sender_id", sender_id, update_data)
+    ok = upsert_record("Leads", "sender_id", sender_id, update_data)
 
+    cached = runtime_state_cache.get(sender_id, {})
+    lead = dict(cached.get("lead", {}) or {})
+    lead.update(update_data)
+
+    runtime_state_cache[sender_id] = {
+        "step": final_step,
+        "data": final_data,
+        "handover": final_handover,
+        "lead": lead
+    }
+
+    return ok
 
 def reset_user(sender_id):
     sender_id = str(sender_id)
+
+    runtime_state_cache[sender_id] = {
+        "step": "new",
+        "data": {},
+        "handover": False,
+        "lead": {}
+    }
 
     save_state(
         sender_id,
@@ -1022,7 +1105,7 @@ def generate_text_with_pool(engine, contents):
                 print(f"Trying Gemini {engine} model: {model_name} | key index: {key_index}")
 
                 generation_config = {
-                    "temperature": 0.15 if engine == "audit" else 0.25,
+                    "temperature": 0.0 if engine == "audit" else 0.25,
                     "top_p": 0.8,
                 }
 
@@ -1671,8 +1754,70 @@ def send_audit_to_user(sender_id, audit_id, name, business_type, location, audit
     save_audit_history(audit_id, sender_id, name, business_type, location, audit_text)
 
 
+
+def count_audits_this_month(sender_id):
+    month_key = current_month_key()
+    count = 0
+    records = get_all_records("Audit_History")
+
+    for record in records:
+        if str(record.get("sender_id")) != str(sender_id):
+            continue
+        created_at = str(record.get("created_at", ""))
+        if created_at.startswith(month_key):
+            count += 1
+
+    return count
+
+
+def get_latest_audit_for_user(sender_id):
+    records = get_all_records("Audit_History")
+    latest_record = None
+    latest_time = None
+
+    for record in records:
+        if str(record.get("sender_id")) != str(sender_id):
+            continue
+        created = parse_iso(record.get("created_at", ""))
+        if created and (latest_time is None or created > latest_time):
+            latest_record = record
+            latest_time = created
+
+    return latest_record
+
+
+def should_limit_full_audit(sender_id):
+    if MONTHLY_AUDIT_LIMIT_PER_USER <= 0:
+        return False
+    return count_audits_this_month(sender_id) >= MONTHLY_AUDIT_LIMIT_PER_USER
+
 def process_audit_request(sender_id, data, image_url, first_time=True, from_retry=False):
     sender_id = str(sender_id)
+
+    if first_time and should_limit_full_audit(sender_id):
+        latest = get_latest_audit_for_user(sender_id)
+        if latest and latest.get("full_audit"):
+            send_dm(
+                sender_id,
+                "You already received your free full audit this month \u2705\n\nTo protect the free audit system for everyone, we can reuse your latest audit instead of spending another full review credit.\n\nHere is the latest audit summary:",
+                message_type="audit_monthly_limit",
+                state="audit_sent"
+            )
+            time.sleep(0.6)
+            for part in split_message(clean_ai_text_for_instagram(latest.get("full_audit", ""), data.get("type", ""))):
+                send_dm(sender_id, part, message_type="audit_resend", state="audit_sent")
+                time.sleep(0.8)
+            save_state(sender_id, step="audit_sent", data=data, extra={"lead_temperature": "nurture"})
+            return {"status": "monthly_limit_resend"}
+
+        send_dm(
+            sender_id,
+            "You already used your free full audit this month \u2705\n\nSend HELP if you want our strategist to guide you from here.",
+            message_type="audit_monthly_limit",
+            state="audit_sent"
+        )
+        save_state(sender_id, step="audit_sent", data=data, extra={"lead_temperature": "nurture"})
+        return {"status": "monthly_limit"}
 
     if first_time:
         send_dm(

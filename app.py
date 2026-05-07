@@ -1,9 +1,9 @@
 # ============================================================
-# ClientBoost — Instagram Growth Audit + Preview + Lead Funnel
+# ClientBoost - Instagram Growth Audit + Preview + Lead Funnel
 # Single-file Render deployment version
 # Core stack: Flask + Meta Instagram Messaging API + Gemini + Google Sheets + Pillow
-# Specialized strict-follow final version
-# Version: clientboost-specialized-v4-2026-05-07
+# Professional strict-follow final version
+# Version: clientboost-specialized-v4.2-professional-2026-05-07
 # ============================================================
 
 import os
@@ -68,7 +68,7 @@ FOLLOW_RECHECK_EVERY_MESSAGE = env_bool("FOLLOW_RECHECK_EVERY_MESSAGE", True)
 AUDIT_COOLDOWN_DAYS = env_int("AUDIT_COOLDOWN_DAYS", 7)
 SESSION_EXPIRY_DAYS = env_int("SESSION_EXPIRY_DAYS", 3)
 
-# Free-stack safe defaults. You can override env with gemini-2.5-pro if your account supports it.
+# Free-stack safe defaults. You can override env with higher models if your account supports them.
 GEMINI_AUDIT_API_KEYS = [
     k.strip()
     for k in os.environ.get(
@@ -109,11 +109,10 @@ GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 
 GRAPH_API_VERSION = os.environ.get("GRAPH_API_VERSION", "v21.0")
-
 PREVIEW_DIR = "/tmp/clientboost_previews"
 os.makedirs(PREVIEW_DIR, exist_ok=True)
 
-APP_VERSION = "clientboost-specialized-v4-2026-05-07"
+APP_VERSION = "clientboost-specialized-v4.2-professional-2026-05-07"
 
 # ============================================================
 # CONSTANTS
@@ -124,6 +123,7 @@ LEADS_TAB = "Final_Leads"
 MAX_DM_CHARS = 850
 PREFERRED_DM_CHARS = 650
 
+# Emoji are stored as Unicode escapes to prevent mojibake when copying/deploying.
 EMO = {
     "wave": "\U0001F44B",
     "ok": "\u2705",
@@ -141,7 +141,6 @@ EMO = {
     "person": "\U0001F464",
     "write": "\u270D\uFE0F",
     "circle": "\u2B55",
-    "clap": "\U0001F44F",
     "film": "\U0001F3AC",
     "handshake": "\U0001F91D",
     "money": "\U0001F4B0",
@@ -347,7 +346,7 @@ PROFILE_CATEGORIES: Dict[str, Dict[str, Any]] = {
         "money_paths": ["consulting", "coaching", "courses", "speaking"],
     },
     "religious_education_content": {
-        "keywords": ["islamic", "quran", "dua", "duas", "hadith", "religious", "reminder", "spiritual", "deen", "islam", "haqiqat", "haqikat", "allah", "muslim"],
+        "keywords": ["islamic", "quran", "dua", "duas", "hadith", "religious", "reminder", "spiritual", "deen", "islam", "haqiqat", "haqikat", "allah", "muslim", "surah"],
         "style": "Editorial Creator",
         "highlights": ["Help", "Quran", "Surah", "Duas", "Lessons", "About"],
         "grid": ["Reminder", "Quran", "Dua", "Lesson", "Reel", "Carousel", "Story", "Series", "Follow"],
@@ -471,8 +470,7 @@ def extract_json(text: str, default: Any = None) -> Any:
     if not text:
         return default
 
-    cleaned = text.strip()
-    cleaned = cleaned.replace("```json", "```").replace("```JSON", "```")
+    cleaned = text.strip().replace("```json", "```").replace("```JSON", "```")
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`").strip()
 
@@ -582,18 +580,13 @@ def format_list(items: List[Any], max_items: int = 5) -> str:
             clean.append(text)
     clean = clean[:max_items]
     if not clean:
-        return "Not clearly visible"
+        return "- Not clearly readable"
     return "\n".join([f"- {x}" for x in clean])
-
 
 # ============================================================
 # EMOJI / TEXT REPAIR
 # ============================================================
 def fix_mojibake(text: str) -> str:
-    """
-    Repairs broken emoji/text caused by UTF-8 being read as Windows-1252/Latin-1.
-    Example: broken emoji strings become proper emoji again.
-    """
     if not text:
         return ""
 
@@ -636,7 +629,6 @@ def clean_dm_text(text: str, limit: int = MAX_DM_CHARS) -> str:
         r"\bapi\b",
         r"\btoken\b",
     ]
-
     for pattern in blocked_patterns:
         text = re.sub(pattern, "", text, flags=re.I)
 
@@ -647,7 +639,6 @@ def clean_dm_text(text: str, limit: int = MAX_DM_CHARS) -> str:
 
     return text[:limit].strip()
 
-
 # ============================================================
 # STATE HELPERS
 # ============================================================
@@ -656,6 +647,7 @@ def blank_extra_state() -> Dict[str, Any]:
         "audit_json": "{}",
         "last_user_message": "",
         "last_bot_message": "",
+        "pre_follow_step": "",
     }
 
 
@@ -700,6 +692,7 @@ def clear_audit_flow_fields(state: Dict[str, Any]) -> Dict[str, Any]:
         "audit_json": "{}",
         "last_user_message": "",
         "last_bot_message": "",
+        "pre_follow_step": "",
     })
 
     state.update(keep)
@@ -742,7 +735,6 @@ def calculate_recommended_offer(state: Dict[str, Any]) -> str:
         return "Profile Fix + Growth Setup"
 
     return "Growth Setup"
-
 
 # ============================================================
 # GOOGLE SHEETS STORE
@@ -1176,13 +1168,15 @@ def should_strict_follow_gate(state: Dict[str, Any], intent: Optional[str]) -> b
 def enforce_follow_if_needed(sender_id: str, state: Dict[str, Any], intent: Optional[str]) -> bool:
     if should_strict_follow_gate(state, intent):
         if not is_follow_verified(sender_id, state, force=True):
+            current_step = state.get("step", "new")
+
+            if current_step != "follow_gate" and not state.get("pre_follow_step"):
+                state["pre_follow_step"] = current_step
+
             state["step"] = "follow_gate"
             STORE.save_state(sender_id, state)
-            send_dm(
-                sender_id,
-                msg_follow_gate_strict(),
-                ["I FOLLOWED", "WHY FOLLOW", "CANCEL"]
-            )
+
+            send_dm(sender_id, msg_follow_gate_strict(), ["I FOLLOWED", "WHY FOLLOW", "CANCEL"])
             return True
 
     return False
@@ -1579,8 +1573,7 @@ def normalize_audit_data(data: Dict[str, Any], fallback_category: str) -> Dict[s
     data["detected_category"] = detected_category
     data["readability"] = data.get("readability") or "medium"
 
-    list_fields = ["highlight_labels_seen", "post_topics_seen"]
-    for field in list_fields:
+    for field in ["highlight_labels_seen", "post_topics_seen"]:
         if not isinstance(data.get(field), list):
             data[field] = []
 
@@ -1808,47 +1801,15 @@ def rounded_rect(draw, box, radius, fill, outline=None, width=1):
 
 def style_palette(style: str) -> Dict[str, Tuple[int, int, int]]:
     if style == "Warm Commercial":
-        return {
-            "bg": (245, 236, 224),
-            "screen": (255, 255, 255),
-            "text": (20, 20, 20),
-            "muted": (92, 92, 92),
-            "accent": (179, 89, 42),
-            "soft": (239, 219, 198),
-            "tile": (255, 248, 240),
-        }
+        return {"bg": (245, 236, 224), "screen": (255, 255, 255), "text": (20, 20, 20), "muted": (92, 92, 92), "accent": (179, 89, 42), "soft": (239, 219, 198), "tile": (255, 248, 240)}
 
     if style == "Modern Content Grid":
-        return {
-            "bg": (20, 23, 30),
-            "screen": (12, 14, 18),
-            "text": (245, 245, 245),
-            "muted": (178, 183, 190),
-            "accent": (118, 160, 255),
-            "soft": (35, 41, 54),
-            "tile": (24, 28, 38),
-        }
+        return {"bg": (20, 23, 30), "screen": (12, 14, 18), "text": (245, 245, 245), "muted": (178, 183, 190), "accent": (118, 160, 255), "soft": (35, 41, 54), "tile": (24, 28, 38)}
 
     if style == "Editorial Creator":
-        return {
-            "bg": (238, 233, 224),
-            "screen": (255, 255, 252),
-            "text": (28, 28, 28),
-            "muted": (93, 88, 82),
-            "accent": (92, 78, 59),
-            "soft": (225, 218, 205),
-            "tile": (248, 244, 236),
-        }
+        return {"bg": (238, 233, 224), "screen": (255, 255, 252), "text": (28, 28, 28), "muted": (93, 88, 82), "accent": (92, 78, 59), "soft": (225, 218, 205), "tile": (248, 244, 236)}
 
-    return {
-        "bg": (239, 242, 248),
-        "screen": (255, 255, 255),
-        "text": (18, 23, 31),
-        "muted": (94, 102, 114),
-        "accent": (25, 88, 210),
-        "soft": (225, 233, 248),
-        "tile": (248, 250, 255),
-    }
+    return {"bg": (239, 242, 248), "screen": (255, 255, 255), "text": (18, 23, 31), "muted": (94, 102, 114), "accent": (25, 88, 210), "soft": (225, 233, 248), "tile": (248, 250, 255)}
 
 
 def preview_filename_for(sender_id: str, state: Dict[str, Any]) -> str:
@@ -1884,6 +1845,21 @@ def normalize_preview_list(items: Any, fallback: List[str], count: int) -> List[
     return clean[:count]
 
 
+def grid_subtitle(label: str) -> str:
+    value = normalize(label)
+    if any(x in value for x in ["review", "proof", "trust", "result"]):
+        return "Trust"
+    if any(x in value for x in ["dua", "quran", "hadith", "lesson", "tip", "explain", "value"]):
+        return "Save"
+    if any(x in value for x in ["reel", "hook", "trend"]):
+        return "Reach"
+    if any(x in value for x in ["offer", "price", "order", "book", "cta", "contact", "promo"]):
+        return "Action"
+    if any(x in value for x in ["story", "behind", "bts"]):
+        return "Human"
+    return "Content"
+
+
 def generate_preview_image(state: Dict[str, Any], sender_id: str) -> str:
     audit = get_audit_json(state)
 
@@ -1915,11 +1891,9 @@ def generate_preview_image(state: Dict[str, Any], sender_id: str) -> str:
     screen = pal["screen"]
     tile = pal["tile"]
 
-    # Header
     draw.text((70, 45), "ClientBoost Profile Direction", font=font_xl, fill=text)
     draw.text((72, 96), readable_category(category), font=font_sm, fill=muted)
 
-    # Main card
     sx, sy = 70, 140
     sw, sh = 940, 1110
     rounded_rect(draw, (sx, sy, sx + sw, sy + sh), 44, screen)
@@ -1932,20 +1906,12 @@ def generate_preview_image(state: Dict[str, Any], sender_id: str) -> str:
     draw.text((sx + sw - 88, y + 2), "menu", font=font_sm, fill=muted)
 
     y += 78
-
-    # Profile avatar
     cx, cy = sx + 104, y + 62
     draw.ellipse((cx - 58, cy - 58, cx + 58, cy + 58), fill=soft, outline=accent, width=5)
     initials = re.sub(r"[^A-Za-z0-9]", "", profile_name)[:2].upper() or "CB"
     draw_centered(draw, initials, cx, cy - 18, font_md, accent)
 
-    # Strategy stats
-    stats = [
-        ("Bio", "Sharper"),
-        ("6", "Highlights"),
-        ("9", "Post ideas"),
-    ]
-
+    stats = [("Bio", "Sharper"), ("6", "Highlights"), ("9", "Post ideas")]
     stats_x = sx + 255
     gap = 190
 
@@ -1955,7 +1921,6 @@ def generate_preview_image(state: Dict[str, Any], sender_id: str) -> str:
         draw_centered(draw, bottom, px, y + 64, font_sm, muted)
 
     y += 145
-
     draw.text((sx + 44, y), profile_name, font=font_md, fill=text)
     y += 38
 
@@ -1968,7 +1933,6 @@ def generate_preview_image(state: Dict[str, Any], sender_id: str) -> str:
     draw.text((sx + 44, y + 8), cta_line, font=font_sm, fill=accent)
     y += 52
 
-    # CTA buttons
     button_labels = ["Position", "Proof", "Action"]
     btn_w = (sw - 110) // 3
 
@@ -1979,13 +1943,7 @@ def generate_preview_image(state: Dict[str, Any], sender_id: str) -> str:
 
     y += 76
 
-    # Highlights
-    highlights = normalize_preview_list(
-        preview.get("highlight_labels"),
-        cfg.get("highlights", []),
-        6
-    )
-
+    highlights = normalize_preview_list(preview.get("highlight_labels"), cfg.get("highlights", []), 6)
     spacing = (sw - 88) // 6
     for i, label in enumerate(highlights):
         hx = sx + 44 + i * spacing + spacing // 2
@@ -1996,13 +1954,7 @@ def generate_preview_image(state: Dict[str, Any], sender_id: str) -> str:
 
     y += 135
 
-    # Content pillars row
-    pillars = normalize_preview_list(
-        preview.get("content_pillars"),
-        ["Identity", "Value", "Action"],
-        3
-    )
-
+    pillars = normalize_preview_list(preview.get("content_pillars"), ["Identity", "Value", "Action"], 3)
     pillar_w = (sw - 100) // 3
     for i, pillar in enumerate(pillars):
         px = sx + 44 + i * (pillar_w + 6)
@@ -2011,7 +1963,6 @@ def generate_preview_image(state: Dict[str, Any], sender_id: str) -> str:
 
     y += 74
 
-    # Grid tabs
     draw.line((sx + 44, y, sx + sw - 44, y), fill=soft, width=2)
     y += 20
     draw_centered(draw, "Posts", sx + sw // 6, y, font_sm, accent)
@@ -2019,13 +1970,7 @@ def generate_preview_image(state: Dict[str, Any], sender_id: str) -> str:
     draw_centered(draw, "Proof", sx + (sw * 5) // 6, y, font_sm, muted)
     y += 48
 
-    # Grid
-    content_tiles = normalize_preview_list(
-        preview.get("content_tiles"),
-        cfg.get("grid", []),
-        9
-    )
-
+    content_tiles = normalize_preview_list(preview.get("content_tiles"), cfg.get("grid", []), 9)
     tile_gap = 6
     tile_size = (sw - 88 - 2 * tile_gap) // 3
 
@@ -2042,27 +1987,12 @@ def generate_preview_image(state: Dict[str, Any], sender_id: str) -> str:
         subtitle = grid_subtitle(label)
         draw_centered(draw, subtitle, int(x + tile_size / 2), yy + tile_size // 2 + 18, font_xs, muted)
 
-    # Footer
     footer = short_text(preview.get("monetization_angle") or audit.get("monetization_direction") or "Built from your audit", 90)
-    draw_centered(draw, footer, W // 2, H - 64, font_sm, (80, 80, 80) if pal["bg"] != (20, 23, 30) else (210, 210, 210))
+    footer_fill = (80, 80, 80) if pal["bg"] != (20, 23, 30) else (210, 210, 210)
+    draw_centered(draw, footer, W // 2, H - 64, font_sm, footer_fill)
 
     img.save(path, "JPEG", quality=92)
     return filename
-
-
-def grid_subtitle(label: str) -> str:
-    value = normalize(label)
-    if any(x in value for x in ["review", "proof", "trust", "result"]):
-        return "Trust"
-    if any(x in value for x in ["dua", "quran", "hadith", "lesson", "tip", "explain", "value"]):
-        return "Save"
-    if any(x in value for x in ["reel", "hook", "trend"]):
-        return "Reach"
-    if any(x in value for x in ["offer", "price", "order", "book", "cta", "contact", "promo"]):
-        return "Action"
-    if any(x in value for x in ["story", "behind", "bts"]):
-        return "Human"
-    return "Content"
 
 # ============================================================
 # FLOW MESSAGES
@@ -2100,7 +2030,7 @@ def msg_start_audit() -> str:
 
 def msg_ask_type(profile_name: str) -> str:
     return (
-        f"Noted — {profile_name} {EMO['ok']}\n\n"
+        f"Noted - {profile_name} {EMO['ok']}\n\n"
         "What is this profile about?\n\n"
         "A simple answer is enough: Islamic page, restaurant, creator, clinic, shop, coach, real estate, meme page, etc."
     )
@@ -2244,7 +2174,7 @@ def deterministic_conversion_message(state: Dict[str, Any], stage: str, user_tex
         return (
             f"Perfect {EMO['ok']}\n\n"
             "This is worth reviewing properly with a senior ClientBoost strategist.\n\n"
-            "Send your best contact detail — WhatsApp number or email."
+            "Send your best contact detail - WhatsApp number or email."
         )
 
     if stage == "objection":
@@ -2301,8 +2231,6 @@ def objection_reply(state: Dict[str, Any], user_text: str) -> str:
 
 
 def build_ai_conversion_message(state: Dict[str, Any], user_text: str, stage: str) -> str:
-    # Core sales flow is deterministic to avoid robotic/generic answers.
-    # Gemini is not used here for fixed stages because the conversation must stay controlled.
     return deterministic_conversion_message(state, stage, user_text)
 
 # ============================================================
@@ -2344,25 +2272,72 @@ def handle_start(sender_id: str, state: Dict[str, Any]):
 
 
 def handle_follow_confirmed(sender_id: str, state: Dict[str, Any]):
-    if is_follow_verified(sender_id, state, force=True) or FOLLOW_VERIFY_MODE != "strict":
-        state = clear_audit_flow_fields(state)
-        state["step"] = "ask_profile_name"
+    verified = is_follow_verified(sender_id, state, force=True)
+
+    if not verified and FOLLOW_VERIFY_MODE == "strict":
+        state["step"] = "follow_gate"
         STORE.save_state(sender_id, state)
-        send_dm(sender_id, msg_start_audit())
+        send_dm(
+            sender_id,
+            (
+                f"I could not confirm it yet {EMO['eyes']}\n\n"
+                f"Please follow @{FOLLOW_ACCOUNT_USERNAME}, then tap I FOLLOWED again.\n\n"
+                "Sometimes Instagram takes a few seconds to update."
+            ),
+            ["I FOLLOWED", "WHY FOLLOW", "CANCEL"]
+        )
         return
 
-    state["step"] = "follow_gate"
-    STORE.save_state(sender_id, state)
+    previous_step = state.get("pre_follow_step", "")
+    state["pre_follow_step"] = ""
 
-    send_dm(
-        sender_id,
-        (
-            f"I could not confirm it yet {EMO['eyes']}\n\n"
-            f"Please follow @{FOLLOW_ACCOUNT_USERNAME}, then tap I FOLLOWED again.\n\n"
-            "Sometimes Instagram takes a few seconds to update."
-        ),
-        ["I FOLLOWED", "WHY FOLLOW", "CANCEL"]
-    )
+    if previous_step and previous_step not in ["new", "follow_gate"]:
+        state["step"] = previous_step
+        STORE.save_state(sender_id, state)
+
+        if str(state.get("handover", "false")).lower() == "true" or previous_step == "senior_review":
+            send_dm(sender_id, f"Verified {EMO['ok']}\n\nYour profile case is already saved for senior ClientBoost review.")
+            return
+
+        if previous_step == "ask_profile_name":
+            send_dm(sender_id, msg_start_audit())
+            return
+
+        if previous_step == "ask_profile_type":
+            send_dm(sender_id, msg_ask_type(state.get("profile_name") or "your profile"))
+            return
+
+        if previous_step == "ask_goal_or_audience":
+            send_dm(sender_id, msg_ask_goal())
+            return
+
+        if previous_step == "ask_screenshot":
+            send_dm(sender_id, msg_ask_screenshot())
+            return
+
+        if previous_step == "audit_sent":
+            send_dm(sender_id, f"Verified {EMO['ok']}\n\nYou can continue from your audit.", ["SEE PREVIEW", "FIX THIS", "VIEW AUDIT"])
+            return
+
+        if previous_step == "preview_sent":
+            send_dm(sender_id, f"Verified {EMO['ok']}\n\nYou can continue from your preview.", ["FIX THIS", "VIEW AUDIT"])
+            return
+
+        if previous_step.startswith("conversion"):
+            send_dm(sender_id, f"Verified {EMO['ok']}\n\nWe can continue from where we stopped.")
+            return
+
+        if previous_step == "ask_contact":
+            send_dm(sender_id, f"Verified {EMO['ok']}\n\nSend your best contact detail - WhatsApp number or email.")
+            return
+
+        send_dm(sender_id, f"Verified {EMO['ok']}\n\nYou can continue now.")
+        return
+
+    state = clear_audit_flow_fields(state)
+    state["step"] = "ask_profile_name"
+    STORE.save_state(sender_id, state)
+    send_dm(sender_id, msg_start_audit())
 
 
 def handle_profile_name(sender_id: str, state: Dict[str, Any], text: str):
@@ -2373,7 +2348,6 @@ def handle_profile_name(sender_id: str, state: Dict[str, Any], text: str):
     state["profile_name"] = text.strip()[:80]
     state["step"] = "ask_profile_type"
     STORE.save_state(sender_id, state)
-
     send_dm(sender_id, msg_ask_type(state["profile_name"]))
 
 
@@ -2383,37 +2357,26 @@ def handle_profile_type(sender_id: str, state: Dict[str, Any], text: str):
         return
 
     state["profile_type_raw"] = text.strip()[:120]
-
     combined = f"{state.get('profile_name', '')} {text}"
     state["profile_category"] = detect_category(combined)
-
     state["step"] = "ask_goal_or_audience"
     STORE.save_state(sender_id, state)
-
     send_dm(sender_id, msg_ask_goal())
 
 
 def handle_goal_or_audience(sender_id: str, state: Dict[str, Any], text: str):
     if len(text.strip()) < 2:
-        send_dm(
-            sender_id,
-            f"What do you want from this profile — followers, trust, paid promos, sponsors, customers, sales, or brand deals? {EMO['target']}"
-        )
+        send_dm(sender_id, f"What do you want from this profile - followers, trust, paid promos, sponsors, customers, sales, or brand deals? {EMO['target']}")
         return
 
     state["target_location_or_audience"] = text.strip()[:160]
     state["step"] = "ask_screenshot"
     STORE.save_state(sender_id, state)
-
     send_dm(sender_id, msg_ask_screenshot())
 
 
 def handle_screenshot(sender_id: str, state: Dict[str, Any], image_url: str):
-    send_dm(
-        sender_id,
-        f"Got the screenshot {EMO['camera']}\n\nI am checking the real visible details now. This can take a few seconds.",
-        delay=1.0
-    )
+    send_dm(sender_id, f"Got the screenshot {EMO['camera']}\n\nI am checking the real visible details now. This can take a few seconds.", delay=1.0)
 
     state["step"] = "processing_audit"
     STORE.save_state(sender_id, state)
@@ -2423,10 +2386,7 @@ def handle_screenshot(sender_id: str, state: Dict[str, Any], image_url: str):
     if image is None:
         state["step"] = "ask_screenshot"
         STORE.save_state(sender_id, state)
-        send_dm(
-            sender_id,
-            f"I could not read that screenshot properly {EMO['sad']}\n\nPlease send a clearer Instagram profile screenshot."
-        )
+        send_dm(sender_id, f"I could not read that screenshot properly {EMO['sad']}\n\nPlease send a clearer Instagram profile screenshot.")
         return
 
     data = audit_profile(image, state)
@@ -2501,10 +2461,7 @@ def handle_preview(sender_id: str, state: Dict[str, Any]):
     if not state.get("latest_audit"):
         send_dm(
             sender_id,
-            (
-                f"The preview comes after the audit {EMO['smile']}\n\n"
-                "Send GROWTH first, then I will ask 3 easy questions and review the profile properly."
-            ),
+            f"The preview comes after the audit {EMO['smile']}\n\nSend GROWTH first, then I will ask 3 easy questions and review the profile properly.",
             ["GROWTH"]
         )
         state["step"] = "new"
@@ -2524,21 +2481,13 @@ def handle_preview(sender_id: str, state: Dict[str, Any]):
         if str(state.get("preview_generated", "false")).lower() == "true":
             send_dm(sender_id, f"The old preview file expired after server restart {EMO['smile']}\n\nI am rebuilding the same direction now.")
         else:
-            send_dm(
-                sender_id,
-                (
-                    f"Creating your profile preview now {EMO['art']}\n\n"
-                    "This will use the audit details: bio direction, highlights, content ideas, and growth angle."
-                )
-            )
+            send_dm(sender_id, f"Creating your profile preview now {EMO['art']}\n\nThis will use the audit details: bio direction, highlights, content ideas, and growth angle.")
 
         filename = generate_preview_image(state, sender_id)
         state["preview_filename"] = filename
 
-        if PUBLIC_BASE_URL:
-            state["preview_url"] = f"{PUBLIC_BASE_URL}/preview/{filename}"
-    else:
-        send_dm(sender_id, f"Here is your profile preview again {EMO['down']}")
+    if PUBLIC_BASE_URL and filename:
+        state["preview_url"] = f"{PUBLIC_BASE_URL}/preview/{filename}"
 
     state["step"] = "preview_sent"
     state["preview_requested"] = "true"
@@ -2549,15 +2498,9 @@ def handle_preview(sender_id: str, state: Dict[str, Any]):
     if PUBLIC_BASE_URL and state.get("preview_url"):
         result = send_image(sender_id, state["preview_url"])
         if result.get("error"):
-            send_dm(
-                sender_id,
-                f"The preview is ready, but Instagram did not load the image here {EMO['sad']}\n\nPlease try SEE PREVIEW again in a moment."
-            )
+            send_dm(sender_id, f"The preview is ready, but Instagram did not load the image here {EMO['sad']}\n\nPlease try SEE PREVIEW again in a moment.")
     else:
-        send_dm(
-            sender_id,
-            f"The preview is ready, but I could not send the image here {EMO['sad']}\n\nPlease check PUBLIC_BASE_URL and try again."
-        )
+        send_dm(sender_id, f"The preview is ready, but I could not send the image here {EMO['sad']}\n\nPlease check PUBLIC_BASE_URL and try again.")
 
     time.sleep(0.8)
     send_dm(sender_id, msg_after_preview(), ["FIX THIS", "VIEW AUDIT"])
@@ -2567,11 +2510,7 @@ def start_conversion(sender_id: str, state: Dict[str, Any], text: str = ""):
     if not state.get("latest_audit"):
         send_dm(
             sender_id,
-            (
-                f"I can help with that {EMO['smile']}\n\n"
-                "First I need to audit the profile so the advice is specific, not generic.\n\n"
-                "Send GROWTH to start the free audit."
-            ),
+            f"I can help with that {EMO['smile']}\n\nFirst I need to audit the profile so the advice is specific, not generic.\n\nSend GROWTH to start the free audit.",
             ["GROWTH"]
         )
         return
@@ -2590,10 +2529,8 @@ def advance_conversion(sender_id: str, state: Dict[str, Any], text: str, target_
 
     if step == "conversion_goal" and norm not in YES_WORDS:
         state["goal"] = text.strip()[:150]
-
     elif step == "conversion_timeline" and norm not in YES_WORDS:
         state["timeline"] = text.strip()[:150]
-
     elif step == "conversion_scope" and norm not in YES_WORDS:
         if norm in IDK_WORDS:
             category = state.get("profile_category") or get_audit_json(state).get("detected_category")
@@ -2638,7 +2575,6 @@ def advance_conversion(sender_id: str, state: Dict[str, Any], text: str, target_
         state["lead_temperature"] = "very_hot"
 
     STORE.save_state(sender_id, state)
-
     msg = build_ai_conversion_message(state, text, stage)
     send_dm(sender_id, msg)
 
@@ -2647,12 +2583,7 @@ def handle_objection(sender_id: str, state: Dict[str, Any], text: str, objection
     if not state.get("latest_audit"):
         send_dm(
             sender_id,
-            (
-                f"Good question {EMO['smile']}\n\n"
-                "The audit and preview are free.\n\n"
-                "First I will review the profile, then the next step can be suggested properly.\n\n"
-                "Send GROWTH to start."
-            ),
+            f"Good question {EMO['smile']}\n\nThe audit and preview are free.\n\nFirst I will review the profile, then the next step can be suggested properly.\n\nSend GROWTH to start.",
             ["GROWTH"]
         )
         return
@@ -2663,19 +2594,11 @@ def handle_objection(sender_id: str, state: Dict[str, Any], text: str, objection
     if objection_type in ["thinking_delay", "not_now"]:
         state["lead_temperature"] = "warm"
         STORE.save_state(sender_id, state)
-        send_dm(
-            sender_id,
-            (
-                f"No issue {EMO['smile']}\n\n"
-                "Keep the audit as your starting point.\n\n"
-                "When you want ClientBoost to map the fix properly, reply FIX THIS."
-            )
-        )
+        send_dm(sender_id, f"No issue {EMO['smile']}\n\nKeep the audit as your starting point.\n\nWhen you want ClientBoost to map the fix properly, reply FIX THIS.")
         return
 
     state["step"] = "conversion_goal"
     STORE.save_state(sender_id, state)
-
     msg = build_ai_conversion_message(state, text, "objection")
     send_dm(sender_id, msg)
 
@@ -2684,7 +2607,7 @@ def handle_contact(sender_id: str, state: Dict[str, Any], text: str):
     contact, contact_type = contact_from_text(text)
 
     if not contact:
-        send_dm(sender_id, f"Send your best contact detail — WhatsApp number or email {EMO['smile']}")
+        send_dm(sender_id, f"Send your best contact detail - WhatsApp number or email {EMO['smile']}")
         return
 
     state["contact_info"] = contact
@@ -2727,13 +2650,7 @@ def handle_after_handover(sender_id: str, state: Dict[str, Any], text: str):
         )
         return
 
-    send_dm(
-        sender_id,
-        (
-            f"Noted {EMO['ok']}\n\n"
-            "Your profile case is already saved for senior ClientBoost review."
-        )
-    )
+    send_dm(sender_id, f"Noted {EMO['ok']}\n\nYour profile case is already saved for senior ClientBoost review.")
 
 
 def handle_unclear(sender_id: str, state: Dict[str, Any]):
@@ -2741,34 +2658,24 @@ def handle_unclear(sender_id: str, state: Dict[str, Any]):
 
     if step == "follow_gate":
         send_dm(sender_id, f"Choose one option {EMO['smile']}", ["I FOLLOWED", "WHY FOLLOW", "CANCEL"])
-
     elif step == "ask_profile_name":
         send_dm(sender_id, f"What name should I use for the profile or brand? {EMO['smile']}")
-
     elif step == "ask_profile_type":
         send_dm(sender_id, f"What is this profile about? {EMO['smile']}")
-
     elif step == "ask_goal_or_audience":
-        send_dm(sender_id, f"What do you want from this profile — followers, trust, money, sponsors, bookings, sales, or brand deals? {EMO['target']}")
-
+        send_dm(sender_id, f"What do you want from this profile - followers, trust, money, sponsors, bookings, sales, or brand deals? {EMO['target']}")
     elif step == "ask_screenshot":
         send_dm(sender_id, f"Send one screenshot of the Instagram profile {EMO['camera']}")
-
     elif step == "audit_sent":
         send_dm(sender_id, f"What would you like next? {EMO['smile']}", ["SEE PREVIEW", "FIX THIS", "VIEW AUDIT"])
-
     elif step == "preview_sent":
         send_dm(sender_id, f"What would you like next? {EMO['smile']}", ["FIX THIS", "VIEW AUDIT"])
-
     elif step.startswith("conversion"):
         advance_conversion(sender_id, state, text="yes")
-
     elif step == "ask_contact":
-        send_dm(sender_id, f"Send your best contact detail — WhatsApp number or email {EMO['smile']}")
-
+        send_dm(sender_id, f"Send your best contact detail - WhatsApp number or email {EMO['smile']}")
     elif step == "senior_review":
         handle_after_handover(sender_id, state, "")
-
     else:
         send_dm(sender_id, f"Send GROWTH to start your free Instagram audit {EMO['rocket']}", ["GROWTH"])
 
@@ -2793,7 +2700,6 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
         send_dm(sender_id, f"Owner reset complete {EMO['ok']}\n\nSend GROWTH to test from the beginning.", ["GROWTH"])
         return
 
-    step = state.get("step", "new")
     t_norm = normalize(text)
     pre_intent = direct_intent(text)
 
@@ -2802,10 +2708,12 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
 
     state = STORE.get_state(sender_id)
 
+    follow_gate_allowed_intents = {"follow_confirmed", "generic_done", "ask_why_follow", "cancel", "owner_reset"}
     if state.get("step") == "senior_review" or str(state.get("handover", "false")).lower() == "true":
-        if text:
-            handle_after_handover(sender_id, state, text)
-        return
+        if not (state.get("step") == "follow_gate" and pre_intent in follow_gate_allowed_intents):
+            if text:
+                handle_after_handover(sender_id, state, text)
+            return
 
     last_active = parse_iso(state.get("last_active", ""))
     if last_active and datetime.now(timezone.utc) - last_active > timedelta(days=SESSION_EXPIRY_DAYS):
@@ -2818,17 +2726,9 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
             handle_screenshot(sender_id, state, image_url)
         else:
             if state.get("latest_audit"):
-                send_dm(
-                    sender_id,
-                    f"I received the image {EMO['camera']}\n\nI already have your recent audit here. What would you like next?",
-                    ["SEE PREVIEW", "FIX THIS", "VIEW AUDIT"]
-                )
+                send_dm(sender_id, f"I received the image {EMO['camera']}\n\nI already have your recent audit here. What would you like next?", ["SEE PREVIEW", "FIX THIS", "VIEW AUDIT"])
             else:
-                send_dm(
-                    sender_id,
-                    f"I received the image {EMO['camera']}\n\nFirst send GROWTH so I can review it in the right order.",
-                    ["GROWTH"]
-                )
+                send_dm(sender_id, f"I received the image {EMO['camera']}\n\nFirst send GROWTH so I can review it in the right order.", ["GROWTH"])
         return
 
     if not text:
@@ -2838,21 +2738,16 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
     step = state.get("step", "new")
     t_norm = normalize(text)
     pre_intent = direct_intent(text)
-
     priority_commands = {"cancel", "reset", "restart"}
 
     if t_norm in priority_commands:
         intent = pre_intent
-
     elif step == "ask_profile_name":
         intent = "answer_profile_name"
-
     elif step == "ask_profile_type":
         intent = "answer_profile_type"
-
     elif step == "ask_goal_or_audience":
         intent = "answer_goal_or_audience"
-
     elif step == "conversion_goal":
         if pre_intent in OBJECTION_INTENTS or pre_intent == "money_goal":
             intent = "answer_goal" if pre_intent == "money_goal" else pre_intent
@@ -2861,7 +2756,6 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
             return
         else:
             intent = "answer_goal"
-
     elif step == "conversion_timeline":
         if pre_intent in OBJECTION_INTENTS:
             intent = pre_intent
@@ -2870,7 +2764,6 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
             return
         else:
             intent = "answer_timeline"
-
     elif step == "conversion_scope":
         if pre_intent in OBJECTION_INTENTS:
             intent = pre_intent
@@ -2879,10 +2772,8 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
             return
         else:
             intent = "answer_scope"
-
     elif step == "ask_contact" and contact_from_text(text)[0]:
         intent = "contact_sent"
-
     else:
         intent = pre_intent
 
@@ -2892,65 +2783,49 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
 
         if confidence >= 0.65:
             intent = understood.get("intent")
-
             detected = understood.get("profile_category")
             if detected in PROFILE_CATEGORIES:
                 state["profile_category"] = detected
 
             if understood.get("clean_answer") and intent in [
-                "answer_profile_type",
-                "answer_profile_name",
-                "answer_goal",
-                "answer_timeline",
-                "answer_scope",
-                "answer_goal_or_audience",
+                "answer_profile_type", "answer_profile_name", "answer_goal", "answer_timeline",
+                "answer_scope", "answer_goal_or_audience",
             ]:
                 text = understood.get("clean_answer")
 
             if understood.get("objection_type") and understood.get("objection_type") != "none":
                 state["objection_type"] = understood.get("objection_type")
-
         else:
             intent = "unclear"
 
     if intent == "owner_reset":
         STORE.reset_state(sender_id)
         send_dm(sender_id, f"Owner reset complete {EMO['ok']}\n\nSend GROWTH to test from the beginning.", ["GROWTH"])
-
     elif intent == "start_audit":
         handle_start(sender_id, state)
-
     elif intent == "follow_confirmed" or (intent == "generic_done" and step == "follow_gate"):
         handle_follow_confirmed(sender_id, state)
-
     elif intent == "ask_why_follow":
         send_dm(sender_id, msg_why_follow(), ["I FOLLOWED", "CANCEL"])
-
     elif intent == "cancel":
         state["step"] = "new"
+        state["pre_follow_step"] = ""
         STORE.save_state(sender_id, state)
         send_dm(sender_id, f"Cancelled {EMO['ok']}\n\nSend GROWTH whenever you are ready.", ["GROWTH"])
-
     elif intent == "soft_reset":
         state["step"] = "new"
         STORE.save_state(sender_id, state)
         send_dm(sender_id, f"No problem {EMO['ok']}\n\nSend GROWTH whenever you are ready.", ["GROWTH"])
-
     elif intent == "answer_profile_name":
         handle_profile_name(sender_id, state, text)
-
     elif intent == "answer_profile_type":
         handle_profile_type(sender_id, state, text)
-
     elif intent in ["answer_goal_or_audience", "answer_location_or_audience"]:
         handle_goal_or_audience(sender_id, state, text)
-
     elif intent == "request_latest":
         handle_latest(sender_id, state)
-
     elif intent == "request_preview":
         handle_preview(sender_id, state)
-
     elif intent == "request_new_audit":
         allowed, reason = can_start_new_audit(state)
         if allowed:
@@ -2960,13 +2835,10 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
             handle_start(sender_id, state)
         else:
             send_dm(sender_id, reason, ["VIEW AUDIT", "SEE PREVIEW", "FIX THIS"])
-
     elif intent == "request_help":
         start_conversion(sender_id, state, text)
-
     elif intent in OBJECTION_INTENTS:
         handle_objection(sender_id, state, text, intent)
-
     elif intent == "money_goal":
         if step in ["audit_sent", "preview_sent"]:
             start_conversion(sender_id, state, text)
@@ -2974,26 +2846,21 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
             advance_conversion(sender_id, state, text)
         else:
             handle_goal_or_audience(sender_id, state, text)
-
     elif intent == "yes":
         if step in ["audit_sent", "preview_sent"]:
             start_conversion(sender_id, state, text)
         elif step in ["conversion_pain", "conversion_reframe", "conversion_solution"]:
             advance_conversion(sender_id, state, text)
         elif step == "ask_contact":
-            send_dm(sender_id, f"Send your best contact detail — WhatsApp number or email {EMO['smile']}")
+            send_dm(sender_id, f"Send your best contact detail - WhatsApp number or email {EMO['smile']}")
         else:
             handle_unclear(sender_id, state)
-
     elif intent == "answer_goal":
         advance_conversion(sender_id, state, text, "timeline")
-
     elif intent == "answer_timeline":
         advance_conversion(sender_id, state, text, "scope")
-
     elif intent == "answer_scope":
         advance_conversion(sender_id, state, text, "ask_contact")
-
     elif intent == "contact_sent":
         if step == "ask_contact":
             handle_contact(sender_id, state, text)
@@ -3003,7 +2870,6 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
             advance_conversion(sender_id, state, text)
         else:
             handle_unclear(sender_id, state)
-
     else:
         if step in ["conversion_pain", "conversion_reframe", "conversion_solution", "conversion_goal", "conversion_timeline", "conversion_scope"]:
             advance_conversion(sender_id, state, text)
@@ -3067,8 +2933,6 @@ def webhook():
                 if mid:
                     with PROCESSED_LOCK:
                         now_ts = time.time()
-
-                        # clean old ids
                         old_keys = [k for k, v in PROCESSED_MIDS.items() if now_ts - v > 600]
                         for key in old_keys:
                             PROCESSED_MIDS.pop(key, None)

@@ -2,6 +2,7 @@
 # ClientBoost — Instagram Growth Audit + Preview + Lead Funnel
 # Single-file Render deployment version
 # Core stack: Flask + Meta Instagram Messaging API + Gemini + Google Sheets + Pillow
+# Free-stack locked final version
 # ============================================================
 
 import os
@@ -36,6 +37,13 @@ app = Flask(__name__)
 # ============================================================
 # ENVIRONMENT
 # ============================================================
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except Exception:
+        return default
+
+
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "clientboost2024")
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN", "")
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
@@ -44,21 +52,30 @@ OWNER_RESET_CODE = os.environ.get("OWNER_RESET_CODE", "CBRESET2026")
 FOLLOW_REQUIRED = os.environ.get("FOLLOW_REQUIRED", "true").lower() == "true"
 FOLLOW_ACCOUNT_USERNAME = os.environ.get("FOLLOW_ACCOUNT_USERNAME", "clientboost.in")
 FOLLOW_VERIFY_MODE = os.environ.get("FOLLOW_VERIFY_MODE", "strict").lower()
-FOLLOW_CACHE_HOURS = int(os.environ.get("FOLLOW_CACHE_HOURS", "24"))
+FOLLOW_CACHE_HOURS = env_int("FOLLOW_CACHE_HOURS", 24)
 
-AUDIT_COOLDOWN_DAYS = int(os.environ.get("AUDIT_COOLDOWN_DAYS", "7"))
-SESSION_EXPIRY_DAYS = int(os.environ.get("SESSION_EXPIRY_DAYS", "3"))
+AUDIT_COOLDOWN_DAYS = env_int("AUDIT_COOLDOWN_DAYS", 7)
+SESSION_EXPIRY_DAYS = env_int("SESSION_EXPIRY_DAYS", 3)
 
-GEMINI_AUDIT_API_KEYS = [k.strip() for k in os.environ.get("GEMINI_AUDIT_API_KEYS", os.environ.get("GEMINI_API_KEY", "")).split(",") if k.strip()]
-GEMINI_CONVERSION_API_KEYS = [k.strip() for k in os.environ.get("GEMINI_CONVERSION_API_KEYS", ",".join(GEMINI_AUDIT_API_KEYS)).split(",") if k.strip()]
-GEMINI_AUDIT_MODELS = [m.strip() for m in os.environ.get(
-    "GEMINI_AUDIT_MODELS",
-    "gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite"
-).split(",") if m.strip()]
-GEMINI_CONVERSION_MODELS = [m.strip() for m in os.environ.get(
-    "GEMINI_CONVERSION_MODELS",
-    "gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.5-pro"
-).split(",") if m.strip()]
+# Free-stack defaults. Env can override, but defaults avoid unknown / preview model names.
+GEMINI_AUDIT_API_KEYS = [
+    k.strip() for k in os.environ.get("GEMINI_AUDIT_API_KEYS", os.environ.get("GEMINI_API_KEY", "")).split(",") if k.strip()
+]
+GEMINI_CONVERSION_API_KEYS = [
+    k.strip() for k in os.environ.get("GEMINI_CONVERSION_API_KEYS", ",".join(GEMINI_AUDIT_API_KEYS)).split(",") if k.strip()
+]
+GEMINI_AUDIT_MODELS = [
+    m.strip() for m in os.environ.get(
+        "GEMINI_AUDIT_MODELS",
+        "gemini-2.5-flash,gemini-2.5-flash-lite"
+    ).split(",") if m.strip()
+]
+GEMINI_CONVERSION_MODELS = [
+    m.strip() for m in os.environ.get(
+        "GEMINI_CONVERSION_MODELS",
+        "gemini-2.5-flash,gemini-2.5-flash-lite"
+    ).split(",") if m.strip()
+]
 
 GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
@@ -79,22 +96,22 @@ USER_STATE_HEADERS = [
     "sender_id", "instagram_username", "step", "profile_name", "profile_type_raw",
     "profile_category", "target_location_or_audience", "latest_audit", "audit_score",
     "main_gap", "profile_gap", "content_gap", "trust_gap", "cta_gap", "top_fix",
-    "preview_requested", "preview_generated", "preview_style", "lead_temperature",
-    "objection_type", "phone_number", "contact_info", "contact_type", "goal", "timeline",
-    "scope_preference", "handover", "cooldown_until", "follow_verified",
+    "preview_requested", "preview_generated", "preview_style", "preview_filename", "preview_url",
+    "lead_temperature", "objection_type", "phone_number", "contact_info", "contact_type",
+    "goal", "timeline", "scope_preference", "handover", "cooldown_until", "follow_verified",
     "follow_verified_at", "last_active", "final_saved", "state_json"
 ]
 
 FINAL_LEADS_HEADERS = [
     "timestamp", "sender_id", "instagram_username", "profile_name", "profile_type_raw",
     "profile_category", "target_location_or_audience", "audit_score", "main_gap",
-    "top_fix", "preview_requested", "preview_generated", "preview_style",
+    "top_fix", "preview_requested", "preview_generated", "preview_style", "preview_url",
     "lead_temperature", "objection_type", "goal", "timeline", "scope_preference",
     "contact_info", "contact_type", "handover_status", "recommended_offer",
     "session_status", "latest_user_message"
 ]
 
-# Use exact command matching for trigger words. Do not trigger GROWTH inside normal sentences.
+# Exact command matching. This prevents words like "growth" inside normal sentences from restarting the flow.
 DIRECT_COMMANDS = {
     "growth": "start_audit",
     "start": "start_audit",
@@ -124,6 +141,12 @@ DIRECT_COMMANDS = {
     "explain": "yes",
     "reset": "soft_reset",
     "restart": "soft_reset",
+}
+
+YES_WORDS = {"yes", "y", "ok", "okay", "show me", "tell me", "explain"}
+OBJECTION_INTENTS = {
+    "price_question", "asks_details", "trust_issue", "thinking_delay", "not_now",
+    "already_has_designer", "wants_to_do_self", "budget_low", "asks_results"
 }
 
 PROFILE_CATEGORIES: Dict[str, Dict[str, Any]] = {
@@ -324,6 +347,7 @@ PROFILE_CATEGORIES: Dict[str, Dict[str, Any]] = {
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+
 def parse_iso(value: str) -> Optional[datetime]:
     if not value:
         return None
@@ -332,8 +356,10 @@ def parse_iso(value: str) -> Optional[datetime]:
     except Exception:
         return None
 
+
 def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower())
+
 
 def safe_json_loads(text: str, default: Any = None) -> Any:
     if default is None:
@@ -343,13 +369,13 @@ def safe_json_loads(text: str, default: Any = None) -> Any:
     except Exception:
         return default
 
+
 def extract_json(text: str, default: Any = None) -> Any:
     if default is None:
         default = {}
     if not text:
         return default
-    cleaned = text.strip()
-    cleaned = cleaned.replace("```json", "```").replace("```JSON", "```")
+    cleaned = text.strip().replace("```json", "```").replace("```JSON", "```")
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`").strip()
     try:
@@ -363,6 +389,7 @@ def extract_json(text: str, default: Any = None) -> Any:
         except Exception:
             return default
     return default
+
 
 def split_text(text: str, limit: int = MAX_DM_CHARS) -> List[str]:
     text = (text or "").strip()
@@ -388,15 +415,18 @@ def split_text(text: str, limit: int = MAX_DM_CHARS) -> List[str]:
         parts.append(current.strip())
     return parts
 
+
 def phone_from_text(text: str) -> Optional[str]:
     digits = re.sub(r"\D", "", text or "")
     if len(digits) >= 10:
         return digits[-10:] if len(digits) <= 12 else digits
     return None
 
+
 def email_from_text(text: str) -> Optional[str]:
     m = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text or "")
     return m.group(0) if m else None
+
 
 def contact_from_text(text: str) -> Tuple[Optional[str], Optional[str]]:
     email = email_from_text(text)
@@ -407,6 +437,74 @@ def contact_from_text(text: str) -> Tuple[Optional[str], Optional[str]]:
         return phone, "phone"
     return None, None
 
+
+def safe_username(value: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9_.]", "", normalize(value).replace(" ", ""))
+    return cleaned[:24] or "yourprofile"
+
+
+def has_emoji(text: str) -> bool:
+    return bool(re.search(r"[\U0001F300-\U0001FAFF✅🎯📸👀🙂🚀⭐⚡⭕✍🤝🎨👇😕]", text or ""))
+
+
+def clean_dm_text(text: str, limit: int = MAX_DM_CHARS) -> str:
+    text = (text or "").replace("```", "").strip()
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    # Avoid visible internal wording if an LLM ever ignores instructions.
+    blocked_patterns = [
+        r"\bbackend\b", r"\bautomation\b", r"\bAI\b", r"\bAI model\b", r"\bGemini\b",
+        r"\bquota\b", r"\bcooldown\b", r"\bapi\b", r"\btoken\b"
+    ]
+    for pattern in blocked_patterns:
+        text = re.sub(pattern, "", text, flags=re.I)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    if text and not has_emoji(text):
+        text = "🙂 " + text
+    return text[:limit].strip()
+
+
+def clear_audit_flow_fields(state: Dict[str, Any]) -> Dict[str, Any]:
+    keep = {
+        "sender_id": state.get("sender_id", ""),
+        "instagram_username": state.get("instagram_username", ""),
+        "follow_verified": state.get("follow_verified", "false"),
+        "follow_verified_at": state.get("follow_verified_at", ""),
+        "last_active": state.get("last_active", now_iso()),
+    }
+    state.update({
+        "profile_name": "",
+        "profile_type_raw": "",
+        "profile_category": "",
+        "target_location_or_audience": "",
+        "latest_audit": "",
+        "audit_score": "",
+        "main_gap": "",
+        "profile_gap": "",
+        "content_gap": "",
+        "trust_gap": "",
+        "cta_gap": "",
+        "top_fix": "",
+        "preview_requested": "false",
+        "preview_generated": "false",
+        "preview_style": "",
+        "preview_filename": "",
+        "preview_url": "",
+        "lead_temperature": "cold",
+        "objection_type": "none",
+        "phone_number": "",
+        "contact_info": "",
+        "contact_type": "",
+        "goal": "",
+        "timeline": "",
+        "scope_preference": "",
+        "handover": "false",
+        "cooldown_until": "",
+        "final_saved": "false",
+    })
+    state.update(keep)
+    return state
+
+
 def calculate_recommended_offer(state: Dict[str, Any]) -> str:
     category = state.get("profile_category", "default_general_profile")
     goal = normalize(state.get("goal", ""))
@@ -416,7 +514,7 @@ def calculate_recommended_offer(state: Dict[str, Any]) -> str:
 
     if "full" in scope or "manage" in scope or "system" in scope:
         return "Full Growth System"
-    if any(x in goal for x in ["sales", "booking", "enquir", "lead", "client"]):
+    if any(x in goal for x in ["sales", "booking", "enquir", "lead", "client", "customer", "order"]):
         if category in ["food_restaurant", "beauty_salon", "real_estate", "clinic_healthcare", "professional_service", "local_service"]:
             return "Growth Setup + Lead System"
     if score and score < 55:
@@ -487,6 +585,8 @@ class SheetStore:
             "preview_requested": "false",
             "preview_generated": "false",
             "preview_style": "",
+            "preview_filename": "",
+            "preview_url": "",
             "lead_temperature": "cold",
             "objection_type": "none",
             "phone_number": "",
@@ -580,6 +680,7 @@ class SheetStore:
             "preview_requested": state.get("preview_requested", "false"),
             "preview_generated": state.get("preview_generated", "false"),
             "preview_style": state.get("preview_style", ""),
+            "preview_url": state.get("preview_url", ""),
             "lead_temperature": "senior_review",
             "objection_type": state.get("objection_type", "none"),
             "goal": state.get("goal", ""),
@@ -603,6 +704,7 @@ class SheetStore:
             FINAL_LEADS_MEMORY.append(row)
             return True
 
+
 MEMORY_STORE: Dict[str, Dict[str, Any]] = {}
 FINAL_LEADS_MEMORY: List[Dict[str, Any]] = []
 STORE = SheetStore()
@@ -610,35 +712,8 @@ STORE = SheetStore()
 # ============================================================
 # META MESSAGING
 # ============================================================
-def send_dm(recipient_id: str, text: str, quick_replies: Optional[List[str]] = None) -> Dict[str, Any]:
-    if not PAGE_ACCESS_TOKEN:
-        print("PAGE_ACCESS_TOKEN missing. DM not sent.")
-        return {"error": "missing token"}
-    parts = split_text(text, MAX_DM_CHARS)
-    final_response: Dict[str, Any] = {}
-    for i, part in enumerate(parts):
-        url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/me/messages"
-        message: Dict[str, Any] = {"text": part}
-        if quick_replies and i == len(parts) - 1:
-            message["quick_replies"] = [
-                {"content_type": "text", "title": title[:20], "payload": title.upper().replace(" ", "_")}
-                for title in quick_replies[:13]
-            ]
-        payload = {"recipient": {"id": recipient_id}, "message": message, "messaging_type": "RESPONSE"}
-        try:
-            r = requests.post(url, params={"access_token": PAGE_ACCESS_TOKEN}, json=payload, timeout=15)
-            if r.status_code >= 300:
-                print("send_dm error", r.status_code, r.text)
-            final_response = r.json() if r.text else {}
-        except Exception as e:
-            print(f"send_dm failed: {e}")
-            final_response = {"error": str(e)}
-        if len(parts) > 1:
-            time.sleep(0.8)
-    return final_response
-
 def send_typing_action(recipient_id: str) -> None:
-    # Best-effort only. Some Instagram messaging setups ignore sender actions.
+    # Best-effort only. Some Instagram setups ignore sender actions.
     if not PAGE_ACCESS_TOKEN:
         return
     url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/me/messages"
@@ -648,21 +723,63 @@ def send_typing_action(recipient_id: str) -> None:
     except Exception:
         pass
 
+
+def post_to_meta(url: str, payload: Dict[str, Any], timeout: int = 15) -> Dict[str, Any]:
+    last_response: Dict[str, Any] = {}
+    for _ in range(2):
+        try:
+            r = requests.post(url, params={"access_token": PAGE_ACCESS_TOKEN}, json=payload, timeout=timeout)
+            if r.status_code < 300:
+                return r.json() if r.text else {}
+            print("Meta send error", r.status_code, r.text)
+            last_response = {"error": r.text, "status_code": r.status_code}
+        except Exception as e:
+            print(f"Meta send failed: {e}")
+            last_response = {"error": str(e)}
+        time.sleep(0.7)
+    return last_response
+
+
+def send_dm(recipient_id: str, text: str, quick_replies: Optional[List[str]] = None, delay: float = 0.9) -> Dict[str, Any]:
+    if not PAGE_ACCESS_TOKEN:
+        print("PAGE_ACCESS_TOKEN missing. DM not sent.")
+        return {"error": "missing token"}
+    text = clean_dm_text(text, limit=5000)
+    parts = split_text(text, MAX_DM_CHARS)
+    final_response: Dict[str, Any] = {}
+    for i, part in enumerate(parts):
+        send_typing_action(recipient_id)
+        # Human-paced delay before every outgoing message.
+        sleep_time = min(2.4, max(delay, len(part) / 520))
+        time.sleep(sleep_time)
+        url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/me/messages"
+        message: Dict[str, Any] = {"text": part}
+        if quick_replies and i == len(parts) - 1:
+            message["quick_replies"] = [
+                {"content_type": "text", "title": title[:20], "payload": title.upper().replace(" ", "_")}
+                for title in quick_replies[:13]
+            ]
+        payload = {"recipient": {"id": recipient_id}, "message": message, "messaging_type": "RESPONSE"}
+        final_response = post_to_meta(url, payload)
+        if len(parts) > 1:
+            time.sleep(0.6)
+    return final_response
+
+
 def send_image(recipient_id: str, image_url: str) -> Dict[str, Any]:
+    if not PAGE_ACCESS_TOKEN:
+        print("PAGE_ACCESS_TOKEN missing. Image not sent.")
+        return {"error": "missing token"}
+    send_typing_action(recipient_id)
+    time.sleep(1.1)
     url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/me/messages"
     payload = {
         "recipient": {"id": recipient_id},
         "message": {"attachment": {"type": "image", "payload": {"url": image_url}}},
         "messaging_type": "RESPONSE",
     }
-    try:
-        r = requests.post(url, params={"access_token": PAGE_ACCESS_TOKEN}, json=payload, timeout=15)
-        if r.status_code >= 300:
-            print("send_image error", r.status_code, r.text)
-        return r.json() if r.text else {}
-    except Exception as e:
-        print(f"send_image failed: {e}")
-        return {"error": str(e)}
+    return post_to_meta(url, payload)
+
 
 def download_image(image_url: str) -> Optional[Image.Image]:
     try:
@@ -673,6 +790,7 @@ def download_image(image_url: str) -> Optional[Image.Image]:
     except Exception as e:
         print(f"download_image failed: {e}")
         return None
+
 
 def get_instagram_profile(sender_id: str) -> Dict[str, Any]:
     if not PAGE_ACCESS_TOKEN:
@@ -688,6 +806,7 @@ def get_instagram_profile(sender_id: str) -> Dict[str, Any]:
     except Exception as e:
         print(f"get_instagram_profile failed: {e}")
         return {}
+
 
 def is_follow_verified(sender_id: str, state: Dict[str, Any], force: bool = False) -> bool:
     if not FOLLOW_REQUIRED:
@@ -723,11 +842,12 @@ def gemini_generate(prompt: str, image: Optional[Image.Image] = None, purpose: s
         print(f"No Gemini keys for {purpose}")
         return None
     last_error = None
+    generation_config = {"temperature": 0.15 if purpose == "audit" else 0.45}
     for model_name in models:
         for key in keys:
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel(model_name)
+                model = genai.GenerativeModel(model_name, generation_config=generation_config)
                 content = [prompt, image] if image is not None else prompt
                 response = model.generate_content(content)
                 text = getattr(response, "text", None)
@@ -746,7 +866,6 @@ def gemini_generate(prompt: str, image: Optional[Image.Image] = None, purpose: s
 # ============================================================
 def detect_category(text: str) -> str:
     t = normalize(text)
-    # Prefer specific creator categories before broad influencer/reels categories.
     priority = [
         "religious_education_content", "food_restaurant", "real_estate", "beauty_salon",
         "clinic_healthcare", "photographer_videographer", "artist_portfolio", "knowledge_creator",
@@ -758,6 +877,7 @@ def detect_category(text: str) -> str:
             if kw in t:
                 return category
     return "default_general_profile"
+
 
 def direct_intent(text: str) -> Optional[str]:
     t = normalize(text)
@@ -787,6 +907,7 @@ def direct_intent(text: str) -> Optional[str]:
         return "asks_results"
     return None
 
+
 def ai_understand_message(state: Dict[str, Any], user_text: str) -> Dict[str, Any]:
     prompt = f"""
 You are the intent understanding layer for ClientBoost's Instagram audit conversation.
@@ -806,7 +927,7 @@ User message:
 
 Classify intent as one of:
 start_audit, follow_confirmed, ask_why_follow, cancel,
-answer_profile_name, answer_profile_type, answer_location_or_audience,
+answer_profile_name, answer_profile_type, answer_goal_or_audience,
 request_preview, request_help, request_latest, request_new_audit,
 price_question, asks_details, trust_issue, thinking_delay, not_now,
 already_has_designer, wants_to_do_self, budget_low, asks_results,
@@ -849,7 +970,7 @@ User details:
 Profile / Brand name: {state.get('profile_name')}
 Profile type / niche: {state.get('profile_type_raw')}
 Internal category: {category}
-Target audience: {state.get('target_location_or_audience')}
+User goal / target: {state.get('target_location_or_audience')}
 Likely conversion angle: {cfg.get('angle')}
 
 Important:
@@ -860,6 +981,7 @@ No fake guarantees.
 No generic advice.
 No backend words.
 No mention of AI.
+Use simple English.
 
 Use this 100-point scoring system:
 1. Name + Username clarity /10
@@ -873,8 +995,6 @@ Use this 100-point scoring system:
 9. Trust signals /10
 10. Audience fit + conversion /10
 
-The score must be honest and based on visible evidence.
-
 JSON schema:
 {{
   "overall_score": 0,
@@ -886,27 +1006,22 @@ JSON schema:
   "trust_conversion_score": 0,
   "profile_identity": {{
     "noticed": "specific observation about name, username, profile photo, positioning",
-    "meaning": "why this matters",
     "fix": "specific fix"
   }},
   "bio_cta": {{
     "noticed": "specific observation about bio and action path",
-    "meaning": "why this affects conversion",
     "fix": "specific fix"
   }},
   "highlights": {{
     "noticed": "specific observation about highlights, labels, covers, order",
-    "meaning": "why this affects trust",
     "fix": "specific fix"
   }},
   "posts_reels": {{
     "noticed": "specific observation about posts, reels, grid, covers, hooks",
-    "meaning": "why this affects reach or memory",
     "fix": "specific fix"
   }},
   "trust_conversion": {{
     "noticed": "specific observation about trust proof, reviews, authority, CTA, contact path",
-    "meaning": "why this affects enquiries, followers, sales, bookings, or collaborations",
     "fix": "specific fix"
   }},
   "top_fix": "one priority fix that should be done first",
@@ -917,19 +1032,20 @@ Tone:
 Premium, direct, human, expert.
 Use screenshot evidence.
 If something is not visible, say it is not clearly visible.
+Keep every noticed/fix short.
 """.strip()
 
     text = gemini_generate(prompt, image=image, purpose="audit")
     data = extract_json(text or "", {})
     if not data:
         data = fallback_audit(cfg)
-    data = normalize_audit_data(data, cfg)
-    return data
+    return normalize_audit_data(data, cfg)
+
 
 def fallback_audit(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "overall_score": 50,
-        "main_gap": "The profile structure is not clear enough for a new visitor to understand, trust, and act quickly.",
+        "main_gap": "The profile needs clearer structure so visitors understand, trust, and act faster.",
         "profile_identity_score": 5,
         "bio_cta_score": 5,
         "highlights_score": 5,
@@ -937,39 +1053,35 @@ def fallback_audit(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "trust_conversion_score": 5,
         "profile_identity": {
             "noticed": "The profile identity is not clear enough from the visible screenshot.",
-            "meaning": "A new visitor should understand the profile within a few seconds.",
-            "fix": "Make the name, profile photo, and first line of the bio more direct."
+            "fix": "Make the name, profile photo, and first bio line more direct."
         },
         "bio_cta": {
             "noticed": "The bio and action path need more clarity.",
-            "meaning": "People may visit but leave without knowing what to do next.",
             "fix": "Add a clear value line and one direct action."
         },
         "highlights": {
             "noticed": "The highlight structure needs improvement.",
-            "meaning": "Highlights should build trust before someone scrolls.",
-            "fix": "Use clearer labels and covers based on the profile type."
+            "fix": "Use simple labels and clean covers based on the profile type."
         },
         "posts_reels": {
             "noticed": "The grid needs stronger content pillars.",
-            "meaning": "Random content may get views, but structured content builds memory and trust.",
-            "fix": "Create repeatable content pillars for value, proof, story, and CTA."
+            "fix": "Create repeatable posts for value, proof, story, and action."
         },
         "trust_conversion": {
             "noticed": "Trust and conversion signals are not strong enough.",
-            "meaning": "People act when they understand and trust the profile.",
             "fix": "Add proof, stronger CTA, and a clearer contact route."
         },
         "top_fix": "Rebuild the bio, highlights, and first 9-post structure.",
         "recommended_preview_style": cfg.get("style"),
     }
 
+
 def normalize_audit_data(data: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
     for key in ["profile_identity", "bio_cta", "highlights", "posts_reels", "trust_conversion"]:
         if not isinstance(data.get(key), dict):
-            data[key] = {"noticed": "Not clearly visible.", "meaning": "This affects trust and action.", "fix": "Make this section clearer."}
-        for sub in ["noticed", "meaning", "fix"]:
-            data[key][sub] = str(data[key].get(sub, "")).strip()[:500]
+            data[key] = {"noticed": "Not clearly visible.", "fix": "Make this section clearer."}
+        for sub in ["noticed", "fix"]:
+            data[key][sub] = str(data[key].get(sub, "")).strip()[:360]
     for key in ["profile_identity_score", "bio_cta_score", "highlights_score", "posts_reels_score", "trust_conversion_score"]:
         try:
             data[key] = max(0, min(10, int(float(data.get(key, 0)))))
@@ -981,78 +1093,75 @@ def normalize_audit_data(data: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str,
         score = sum(int(data.get(k, 0)) for k in ["profile_identity_score", "bio_cta_score", "highlights_score", "posts_reels_score", "trust_conversion_score"])
         score = min(100, score * 2)
     data["overall_score"] = max(0, min(100, score))
-    data["main_gap"] = str(data.get("main_gap") or "The profile needs stronger structure.").strip()[:500]
-    data["top_fix"] = str(data.get("top_fix") or "Rebuild the bio, highlights, and content structure.").strip()[:500]
+    data["main_gap"] = str(data.get("main_gap") or "The profile needs stronger structure.").strip()[:360]
+    data["top_fix"] = str(data.get("top_fix") or "Rebuild the bio, highlights, and content structure.").strip()[:360]
     data["recommended_preview_style"] = data.get("recommended_preview_style") or cfg.get("style")
     return data
+
 
 def build_audit_messages(data: Dict[str, Any], state: Dict[str, Any]) -> List[str]:
     profile_name = state.get("profile_name") or "This profile"
     profile_type = state.get("profile_type_raw") or "Instagram profile"
-    audience = state.get("target_location_or_audience") or "target audience"
+    goal = state.get("target_location_or_audience") or "growth"
     score = str(data.get("overall_score", "0"))
     main_gap = data.get("main_gap") or "The profile needs stronger structure."
 
     messages = [
         (
-            f"📍 CLIENTBOOST INSTAGRAM AUDIT\n\n"
+            f"📍 CLIENTBOOST AUDIT\n\n"
             f"Profile: {profile_name}\n"
             f"Type: {profile_type}\n"
-            f"Audience: {audience}\n\n"
-            f"◆ Overall Rating: {score}/100\n\n"
-            f"Main Growth Gap:\n{main_gap}\n\n"
-            f"Next, I’ll break down where the profile is losing attention, trust, or action."
+            f"Goal: {goal}\n\n"
+            f"⭐ Overall Rating: {score}/100\n\n"
+            f"Main gap:\n{main_gap}"
         )
     ]
 
     sections = [
-        ("👤", "1. PROFILE IDENTITY", "profile_identity", "profile_identity_score", "Next: Bio + CTA."),
-        ("✍️", "2. BIO + CTA", "bio_cta", "bio_cta_score", "Next: Highlights."),
-        ("⭕", "3. HIGHLIGHTS", "highlights", "highlights_score", "Next: Posts + Reels."),
-        ("🎬", "4. POSTS + REELS", "posts_reels", "posts_reels_score", "Next: Trust + Conversion."),
-        ("🤝", "5. TRUST + CONVERSION", "trust_conversion", "trust_conversion_score", ""),
+        ("👤", "PROFILE IDENTITY", "profile_identity", "profile_identity_score"),
+        ("✍️", "BIO + CTA", "bio_cta", "bio_cta_score"),
+        ("⭕", "HIGHLIGHTS", "highlights", "highlights_score"),
+        ("🎬", "POSTS + REELS", "posts_reels", "posts_reels_score"),
+        ("🤝", "TRUST + CONVERSION", "trust_conversion", "trust_conversion_score"),
     ]
 
-    for emoji, title, key, score_key, cta in sections:
+    for emoji, title, key, score_key in sections:
         sec = data.get(key, {})
-        msg = (
+        messages.append(
             f"{emoji} {title}\n\n"
-            f"Rating: {data.get(score_key, 0)}/10\n\n"
+            f"Score: {data.get(score_key, 0)}/10\n\n"
             f"I noticed:\n{sec.get('noticed', '')}\n\n"
-            f"What this means:\n{sec.get('meaning', '')}\n\n"
             f"Fix:\n{sec.get('fix', '')}"
         )
-        if cta:
-            msg += f"\n\n{cta}"
-        messages.append(msg)
 
     messages.append(
-        f"⚡ PRIORITY FIX\n\n"
-        f"Your first fix should be:\n\n"
-        f"{data.get('top_fix', '')}\n\n"
-        f"This is the change that will make the profile easier to understand, trust, and act on."
+        f"⚡ FIRST FIX\n\n"
+        f"Start here:\n{data.get('top_fix', '')}\n\n"
+        f"This will make the profile easier to understand, trust, and act on."
     )
 
     final_messages: List[str] = []
     for msg in messages:
-        if len(msg) <= MAX_DM_CHARS:
+        if len(msg) <= PREFERRED_DM_CHARS:
             final_messages.append(msg)
         else:
-            final_messages.extend(split_text(msg, MAX_DM_CHARS))
+            final_messages.extend(split_text(msg, PREFERRED_DM_CHARS))
     return final_messages
+
 
 def build_ai_conversion_message(state: Dict[str, Any], user_text: str, stage: str) -> str:
     cfg = PROFILE_CATEGORIES.get(state.get("profile_category") or "default_general_profile", PROFILE_CATEGORIES["default_general_profile"])
     prompt = f"""
 You are a senior ClientBoost strategist speaking in Instagram DM.
 Write ONE short message only.
+No paragraphs longer than 2 short lines.
 Do not ask for contact unless the stage is ask_contact.
-Do not mention bot, AI, backend, automation, cooldown, or handover.
+Do not mention bot, AI, backend, automation, quota, cooldown, or handover.
 Do not use fake guarantees, fake urgency, or fake scarcity.
 Use the exact audit gap and profile type.
-Keep under 650 characters.
-Use light premium emojis only if useful.
-End with one clear CTA question.
+Keep under 520 characters.
+Use 1-2 natural emojis.
+End with one clear question.
 
 Stage: {stage}
 User message: {user_text}
@@ -1060,90 +1169,80 @@ User message: {user_text}
 Profile:
 Name: {state.get('profile_name')}
 Type: {state.get('profile_type_raw')}
-Audience: {state.get('target_location_or_audience')}
+Goal: {state.get('target_location_or_audience')}
 Category: {state.get('profile_category')}
 Audit score: {state.get('audit_score')}/100
 Main gap: {state.get('main_gap')}
 Top fix: {state.get('top_fix')}
-Profile fix: {state.get('profile_gap')}
-Content fix: {state.get('content_gap')}
-Trust fix: {state.get('trust_gap')}
-CTA fix: {state.get('cta_gap')}
 Preview direction: {', '.join(cfg.get('grid', []))}
 
 Stage meanings:
 pain = make the user feel understood and aware of the hidden cost.
 reframe = explain why random posting is not the real fix.
-solution = position ClientBoost as strategy + execution and ask if they want fit checked.
+solution = show the first fix and ask if they want fit checked.
 goal = ask what result matters most.
-timeline = ask how soon they want to improve.
+timeline = ask how soon they want it improved.
 scope = ask profile fix first or full growth system.
 ask_contact = ask best contact detail, WhatsApp or email, for senior strategist review.
-objection = answer the objection, then move to the next logical question.
+objection = answer the objection, then ask the next logical question.
 """.strip()
     text = gemini_generate(prompt, purpose="conversion")
     if text:
-        return text.strip()[:MAX_DM_CHARS]
+        return clean_dm_text(text, MAX_DM_CHARS)
     return deterministic_conversion_message(state, stage, user_text)
 
+
 def deterministic_conversion_message(state: Dict[str, Any], stage: str, user_text: str = "") -> str:
-    main_gap = state.get("main_gap") or "the profile is not giving visitors a strong enough reason to trust and act"
+    main_gap = state.get("main_gap") or "the profile is not clear enough for visitors to trust and act"
     top_fix = state.get("top_fix") or "rebuild the bio, highlights, content pillars, and CTA"
     if stage == "pain":
         return (
-            "I can see the main issue clearly.\n\n"
-            f"This profile is not losing because of one post. The bigger gap is: {main_gap}.\n\n"
-            "That is where most profiles lose opportunities silently.\n\n"
-            "Does that feel accurate from your side?"
+            "I see the real issue now 👀\n\n"
+            f"It is not just posting more. The main gap is: {main_gap}\n\n"
+            "That is where profiles silently lose followers, enquiries, or trust.\n\n"
+            "Want me to show the fix?"
         )
     if stage == "reframe":
         return (
-            "Exactly.\n\n"
-            "Most people try to fix Instagram by posting more. But posting more does not help if the profile foundation is weak.\n\n"
-            "First we fix the structure: bio, highlights, content pillars, proof, CTA, and enquiry path.\n\n"
+            "Exactly ✅\n\n"
+            "More posts will not help if the profile foundation is weak.\n\n"
+            "First we fix the bio, highlights, proof, content direction, and action path.\n\n"
             "Should I show what ClientBoost would fix first?"
         )
     if stage == "solution":
         return (
-            "ClientBoost would not start with random posts.\n\n"
-            f"For this profile, the first move is: {top_fix}.\n\n"
-            "Then content is planned around what your audience needs to trust before they follow, message, buy, book, or collaborate.\n\n"
-            "Want me to check what level of support fits you?"
+            "Here is the first move ⚡\n\n"
+            f"{top_fix}\n\n"
+            "Then content becomes easier to plan because every post has a purpose.\n\n"
+            "Want me to check what support fits you?"
         )
     if stage == "goal":
         return (
-            "Good. What matters most right now?\n\n"
-            "1. More enquiries\n"
-            "2. More followers\n"
-            "3. More sales/bookings\n"
-            "4. More trust\n"
-            "5. Better personal brand\n"
-            "6. Brand collaborations"
+            "Good. What matters most right now? 🎯\n\n"
+            "Reply with one:\n"
+            "Followers / Enquiries / Sales / Bookings / Trust / Brand deals"
         )
     if stage == "timeline":
         return (
-            "Understood.\n\n"
+            "Got it ✅\n\n"
             "How soon do you want to improve this?\n\n"
-            "1. Immediately\n"
-            "2. This week\n"
-            "3. This month\n"
-            "4. Just exploring"
+            "Reply: immediately, this week, this month, or just exploring."
         )
     if stage == "scope":
         return (
-            "That helps.\n\n"
+            "That helps ✅\n\n"
             "Do you want only the profile structure fixed first, or do you want ClientBoost to handle the full growth system too?"
         )
     if stage == "ask_contact":
         return (
-            "Good. This is worth reviewing properly with a senior ClientBoost strategist.\n\n"
-            "Send the best contact detail for you — WhatsApp number or email.\n\n"
-            "They’ll review your audit, preview direction, goal, and suggest the right starting plan."
+            "Perfect ✅\n\n"
+            "This is worth reviewing properly with a senior ClientBoost strategist.\n\n"
+            "Send your best contact detail — WhatsApp number or email."
         )
     return (
-        f"Fair point. Your audit shows the main gap is: {main_gap}.\n\n"
-        "Before suggesting anything, I want to understand your goal clearly.\n\n"
-        "What matters most right now — enquiries, followers, sales, trust, or collaborations?"
+        f"Fair point ✅\n\nThe main gap is: {main_gap}\n\n"
+        "Before suggesting anything, I need to know your goal.\n\n"
+        "What matters most: followers, enquiries, sales, trust, or brand deals?"
     )
 
 # ============================================================
@@ -1159,9 +1258,11 @@ def load_font(size: int, bold: bool = False):
             return ImageFont.truetype(path, size)
     return ImageFont.load_default()
 
+
 def text_width(draw: ImageDraw.ImageDraw, text: str, font) -> int:
     bbox = draw.textbbox((0, 0), text, font=font)
     return bbox[2] - bbox[0]
+
 
 def draw_wrapped(draw: ImageDraw.ImageDraw, text: str, xy: Tuple[int, int], font, fill, max_width: int, line_gap: int = 7, max_lines: int = 4) -> int:
     words = (text or "").split()
@@ -1183,8 +1284,10 @@ def draw_wrapped(draw: ImageDraw.ImageDraw, text: str, xy: Tuple[int, int], font
         y += font.size + line_gap
     return y
 
+
 def rounded_rect(draw, box, radius, fill, outline=None, width=1):
     draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=width)
+
 
 def style_palette(style: str) -> Dict[str, Tuple[int, int, int]]:
     if style == "Warm Commercial":
@@ -1195,21 +1298,23 @@ def style_palette(style: str) -> Dict[str, Tuple[int, int, int]]:
         return {"bg": (238, 233, 224), "screen": (255, 255, 252), "text": (28, 28, 28), "muted": (93, 88, 82), "accent": (92, 78, 59), "soft": (225, 218, 205)}
     return {"bg": (239, 242, 248), "screen": (255, 255, 255), "text": (18, 23, 31), "muted": (94, 102, 114), "accent": (25, 88, 210), "soft": (225, 233, 248)}
 
+
 def build_bio_direction(state: Dict[str, Any], cfg: Dict[str, Any]) -> str:
     name = state.get("profile_name") or "Brand"
-    audience = state.get("target_location_or_audience") or "your audience"
+    goal = state.get("target_location_or_audience") or "your audience"
     category = state.get("profile_category") or "default_general_profile"
     if category == "food_restaurant":
-        return f"{name} | Fresh food for {audience}. Menu, proof, and easy order path."
+        return f"{name} | Fresh food, clear menu, trust proof, and easy order path."
     if category == "real_estate":
-        return f"{name} | Property guidance for {audience}. Listings, documents, visits, and contact."
+        return f"{name} | Property guidance, listings, documents, visits, and clear contact."
     if category == "religious_education_content":
         return f"{name} | Daily reminders, duas, lessons, and shareable Islamic content."
     if category in ["influencer_creator", "personal_brand", "fashion_lifestyle_creator"]:
         return f"{name} | Clear niche, stronger hooks, collab-ready profile, and memorable content."
     if category == "clinic_healthcare":
         return f"{name} | Clear care, treatments, trust proof, and simple booking path."
-    return f"{name} | Clear positioning for {audience}. Better proof, content pillars, and action path."
+    return f"{name} | Clear positioning for {goal}. Better proof, content pillars, and action path."
+
 
 def grid_subtitle(label: str) -> str:
     mapping = {
@@ -1219,6 +1324,7 @@ def grid_subtitle(label: str) -> str:
         "Reminder": "Save", "Hadith": "Value", "Dua": "Share", "Quote": "Share",
     }
     return mapping.get(label, "Content")
+
 
 def generate_preview_image(state: Dict[str, Any]) -> str:
     category = state.get("profile_category") or "default_general_profile"
@@ -1230,7 +1336,6 @@ def generate_preview_image(state: Dict[str, Any]) -> str:
     img = Image.new("RGB", (W, H), pal["bg"])
     draw = ImageDraw.Draw(img)
 
-    font_xl = load_font(44, True)
     font_lg = load_font(34, True)
     font_md = load_font(27, True)
     font_body = load_font(24, False)
@@ -1246,14 +1351,12 @@ def generate_preview_image(state: Dict[str, Any]) -> str:
     muted = pal["muted"]
     accent = pal["accent"]
     soft = pal["soft"]
+    accent_text = (255, 255, 255)
 
-    # Top bar
+    # Top bar — always prioritize profile name given by user, not sender username.
     y = sy + 38
-    username = (state.get("instagram_username") or state.get("profile_name") or "yourprofile").strip().replace(" ", "").lower()[:24]
-    if not username.startswith("@"):
-        username_display = username
-    else:
-        username_display = username[1:]
+    profile_name = (state.get("profile_name") or "Your Profile").strip()[:36]
+    username_display = safe_username(state.get("profile_name") or "yourprofile")
     draw.text((sx + 44, y), username_display, font=font_lg, fill=text)
     draw.text((sx + sw - 100, y + 2), "☰", font=font_lg, fill=text)
 
@@ -1261,12 +1364,12 @@ def generate_preview_image(state: Dict[str, Any]) -> str:
     y += 78
     cx, cy = sx + 104, y + 62
     draw.ellipse((cx - 58, cy - 58, cx + 58, cy + 58), fill=soft, outline=accent, width=5)
-    initials = (state.get("profile_name") or "CB")[:2].upper()
+    initials = re.sub(r"[^A-Za-z0-9]", "", profile_name)[:2].upper() or "CB"
     iw = text_width(draw, initials, font_md)
     draw.text((cx - iw / 2, cy - 18), initials, font=font_md, fill=accent)
 
     stats_x = sx + 230
-    stat_items = [("9", "Post plan"), ("Bio", "Clear"), ("CTA", "Ready")]
+    stat_items = [("9", "Posts"), ("6", "Highlights"), ("3", "Pillars")]
     gap = 200
     for i, (top, bottom) in enumerate(stat_items):
         px = stats_x + i * gap
@@ -1276,13 +1379,12 @@ def generate_preview_image(state: Dict[str, Any]) -> str:
         draw.text((px - bw / 2, y + 66), bottom, font=font_sm, fill=muted)
 
     y += 145
-    profile_name = (state.get("profile_name") or "Your Profile")[:36]
     draw.text((sx + 44, y), profile_name, font=font_md, fill=text)
     y += 38
     bio = build_bio_direction(state, cfg)
     y = draw_wrapped(draw, bio, (sx + 44, y), font_body, text, sw - 88, max_lines=3)
     y += 12
-    cta_line = "Start with structure → then content → then conversion"
+    cta_line = "Clear profile → stronger trust → better action"
     draw.text((sx + 44, y), cta_line, font=font_sm, fill=accent)
     y += 50
 
@@ -1336,19 +1438,18 @@ def generate_preview_image(state: Dict[str, Any]) -> str:
         else:
             fill = soft if idx in [2, 4, 6] else pal["screen"]
         draw.rectangle((x, yy, x + tile_size, yy + tile_size), fill=fill, outline=pal["bg"], width=2)
-        # cover header strip
         draw.rectangle((x, yy, x + tile_size, yy + 56), fill=accent)
         label_short = label[:13]
         lw = text_width(draw, label_short, font_md)
-        draw.text((x + tile_size / 2 - lw / 2, yy + tile_size / 2 - 22), label_short, font=font_md, fill=text)
+        draw.text((x + tile_size / 2 - lw / 2, yy + tile_size / 2 - 22), label_short, font=font_md, fill=accent_text)
         sub = grid_subtitle(label)
         sw2 = text_width(draw, sub, font_xs)
         draw.text((x + tile_size / 2 - sw2 / 2, yy + tile_size / 2 + 20), sub, font=font_xs, fill=muted)
 
-    # Bottom footer outside phone
-    footer = "ClientBoost profile direction — built from the audit"
+    footer = "ClientBoost profile direction — built from your audit"
     fw = text_width(draw, footer, font_sm)
-    draw.text((W / 2 - fw / 2, H - 58), footer, font=font_sm, fill=(80, 80, 80) if pal["bg"] != (20, 23, 30) else (210, 210, 210))
+    footer_fill = (80, 80, 80) if pal["bg"] != (20, 23, 30) else (210, 210, 210)
+    draw.text((W / 2 - fw / 2, H - 58), footer, font=font_sm, fill=footer_fill)
 
     filename = f"preview_{uuid.uuid4().hex}.jpg"
     path = os.path.join(PREVIEW_DIR, filename)
@@ -1360,64 +1461,72 @@ def generate_preview_image(state: Dict[str, Any]) -> str:
 # ============================================================
 def msg_follow_gate() -> str:
     return (
-        f"To unlock the free audit, follow @{FOLLOW_ACCOUNT_USERNAME} first.\n\n"
-        "Once done, tap I FOLLOWED."
+        f"👋 To unlock your free audit, follow @{FOLLOW_ACCOUNT_USERNAME} first.\n\n"
+        "After that, tap I FOLLOWED."
     )
+
 
 def msg_why_follow() -> str:
     return (
-        "The free audit is reserved for people who genuinely want to improve their profile.\n\n"
-        "Following ClientBoost helps us keep it available without charging upfront.\n\n"
+        "✅ The audit is free, but it takes real review time.\n\n"
+        "Following ClientBoost helps us keep the free audit available for more people.\n\n"
         f"Follow @{FOLLOW_ACCOUNT_USERNAME}, then tap I FOLLOWED."
     )
 
+
 def msg_start_audit() -> str:
     return (
-        "Got it.\n\n"
-        "I’ll review the profile from a ClientBoost growth lens — positioning, content, trust, and enquiry path.\n\n"
-        "First, what is the profile or brand name?"
+        "Great 👋\n\n"
+        "I’ll check your Instagram profile like a growth strategist.\n\n"
+        "First, what name should I use for the profile or brand?"
     )
+
 
 def msg_ask_type(profile_name: str) -> str:
     return (
-        f"Noted — {profile_name}.\n\n"
-        "What best describes this Instagram profile?"
+        f"Noted — {profile_name} ✅\n\n"
+        "What is this profile about?\n\n"
+        "A simple answer is enough — restaurant, creator, clinic, shop, coach, real estate, page, etc."
     )
 
-def msg_ask_location() -> str:
+
+def msg_ask_goal() -> str:
     return (
-        "Understood.\n\n"
-        "Who should this profile attract?\n\n"
-        "You can reply naturally — customers, buyers, students, brands, clients, followers, or a global audience."
+        "Got it 🎯\n\n"
+        "What do you want this profile to bring you?\n\n"
+        "Followers, customers, bookings, sales, trust, clients, brand deals, or something else?"
     )
+
 
 def msg_ask_screenshot() -> str:
     return (
-        "Good.\n\n"
-        "Now send a screenshot of the Instagram profile.\n\n"
-        "Make sure the screenshot shows the bio, highlights, follower area, and post grid."
+        "Perfect 📸\n\n"
+        "Now send one screenshot of the Instagram profile.\n\n"
+        "Make sure it shows bio, highlights, followers area, and first posts."
     )
+
 
 def msg_after_audit() -> str:
     return (
-        "Your first fix is clear.\n\n"
-        "This profile does not need random posting first.\n"
-        "It needs stronger structure.\n\n"
-        "Choose the next step:"
+        "✅ Your audit is ready.\n\n"
+        "The main issue is clear now: the profile needs stronger structure before more posting.\n\n"
+        "What do you want to do next?"
     )
+
 
 def msg_after_preview() -> str:
     return (
-        "I’ve prepared the profile direction.\n\n"
-        "It shows how the bio, highlights, and content grid can be structured from the audit.\n\n"
-        "Want ClientBoost to map how this would be fixed properly?"
+        "✅ This is the profile direction.\n\n"
+        "It shows how your bio, highlights, and first grid can look more clear and conversion-focused.\n\n"
+        "Want ClientBoost to map the fix properly?"
     )
+
 
 def msg_senior_review() -> str:
     return (
-        "Done.\n\n"
-        "Your profile case is now ready for senior ClientBoost review.\n\n"
-        "The strategist will continue from here with your audit, preview direction, goal, and contact details already noted."
+        "Done ✅\n\n"
+        "Your profile case is ready for senior ClientBoost review.\n\n"
+        "They’ll continue with your audit, preview direction, goal, and contact details already noted."
     )
 
 # ============================================================
@@ -1427,10 +1536,11 @@ def can_start_new_audit(state: Dict[str, Any]) -> Tuple[bool, str]:
     until = parse_iso(state.get("cooldown_until", ""))
     if until and until > datetime.now(timezone.utc):
         return False, (
-            "Your latest audit is still active.\n\n"
-            "You can view it again or continue with the next step."
+            "✅ I already have your recent audit here.\n\n"
+            "You can view it again, see the preview, or start fixing it."
         )
     return True, ""
+
 
 def handle_start(sender_id: str, state: Dict[str, Any]):
     if state.get("step") == "senior_review" or str(state.get("handover", "false")).lower() == "true":
@@ -1444,54 +1554,60 @@ def handle_start(sender_id: str, state: Dict[str, Any]):
         STORE.save_state(sender_id, state)
         send_dm(sender_id, msg_follow_gate(), ["I FOLLOWED", "WHY FOLLOW", "CANCEL"])
         return
+    state = clear_audit_flow_fields(state)
     state["step"] = "ask_profile_name"
     state["lead_temperature"] = "cold"
     STORE.save_state(sender_id, state)
     send_dm(sender_id, msg_start_audit())
 
+
 def handle_follow_confirmed(sender_id: str, state: Dict[str, Any]):
     if is_follow_verified(sender_id, state, force=True) or FOLLOW_VERIFY_MODE != "strict":
+        state = clear_audit_flow_fields(state)
         state["step"] = "ask_profile_name"
         STORE.save_state(sender_id, state)
         send_dm(sender_id, msg_start_audit())
     else:
         send_dm(sender_id, (
-            "I could not confirm it yet.\n\n"
+            "I could not confirm it yet 👀\n\n"
             f"Please follow @{FOLLOW_ACCOUNT_USERNAME}, then tap I FOLLOWED again.\n\n"
             "Sometimes Instagram takes a few seconds to update."
         ), ["I FOLLOWED", "WHY FOLLOW", "CANCEL"])
 
+
 def handle_profile_name(sender_id: str, state: Dict[str, Any], text: str):
     if len(text.strip()) < 2:
-        send_dm(sender_id, "Please send the profile or brand name.")
+        send_dm(sender_id, "Please send the profile or brand name 🙂")
         return
     state["profile_name"] = text.strip()[:80]
     state["step"] = "ask_profile_type"
     STORE.save_state(sender_id, state)
     send_dm(sender_id, msg_ask_type(state["profile_name"]))
 
+
 def handle_profile_type(sender_id: str, state: Dict[str, Any], text: str):
     if len(text.strip()) < 2:
-        send_dm(sender_id, "Please tell me what best describes this profile.")
+        send_dm(sender_id, "Please tell me what this profile is about 🙂")
         return
     state["profile_type_raw"] = text.strip()[:120]
     state["profile_category"] = detect_category(text)
-    state["step"] = "ask_location_or_audience"
+    state["step"] = "ask_goal_or_audience"
     STORE.save_state(sender_id, state)
-    send_dm(sender_id, msg_ask_location())
+    send_dm(sender_id, msg_ask_goal())
 
-def handle_location(sender_id: str, state: Dict[str, Any], text: str):
+
+def handle_goal_or_audience(sender_id: str, state: Dict[str, Any], text: str):
     if len(text.strip()) < 2:
-        send_dm(sender_id, "Who should this profile attract?")
+        send_dm(sender_id, "What do you want from this profile — followers, customers, bookings, sales, trust, or brand deals? 🎯")
         return
-    state["target_location_or_audience"] = text.strip()[:120]
+    state["target_location_or_audience"] = text.strip()[:160]
     state["step"] = "ask_screenshot"
     STORE.save_state(sender_id, state)
     send_dm(sender_id, msg_ask_screenshot())
 
+
 def handle_screenshot(sender_id: str, state: Dict[str, Any], image_url: str):
-    send_dm(sender_id, "Got the screenshot 📸\n\nI’m reviewing the profile structure now.")
-    send_typing_action(sender_id)
+    send_dm(sender_id, "Got the screenshot 📸\n\nI’m checking the profile structure now.")
     state["step"] = "processing_audit"
     STORE.save_state(sender_id, state)
 
@@ -1499,7 +1615,7 @@ def handle_screenshot(sender_id: str, state: Dict[str, Any], image_url: str):
     if image is None:
         state["step"] = "ask_screenshot"
         STORE.save_state(sender_id, state)
-        send_dm(sender_id, "I could not read that screenshot properly.\n\nPlease send a clearer Instagram profile screenshot.")
+        send_dm(sender_id, "I could not read that screenshot properly 😕\n\nPlease send a clearer Instagram profile screenshot.")
         return
 
     data = audit_profile(image, state)
@@ -1515,6 +1631,11 @@ def handle_screenshot(sender_id: str, state: Dict[str, Any], image_url: str):
         state.get("profile_category"), PROFILE_CATEGORIES["default_general_profile"]
     ).get("style")
 
+    # New audit means any old preview must not be reused.
+    state["preview_filename"] = ""
+    state["preview_url"] = ""
+    state["preview_generated"] = "false"
+
     audit_messages = build_audit_messages(data, state)
     state["latest_audit"] = "\n\n---CB-AUDIT-SECTION---\n\n".join(audit_messages)
     state["lead_temperature"] = "warm"
@@ -1523,74 +1644,103 @@ def handle_screenshot(sender_id: str, state: Dict[str, Any], image_url: str):
     STORE.save_state(sender_id, state)
 
     for msg in audit_messages:
-        send_typing_action(sender_id)
         send_dm(sender_id, msg)
-        time.sleep(1.8)
+        time.sleep(0.7)
 
     send_dm(sender_id, msg_after_audit(), ["SEE PREVIEW", "FIX THIS", "VIEW AUDIT"])
+
 
 def handle_latest(sender_id: str, state: Dict[str, Any]):
     audit = state.get("latest_audit")
     if not audit:
-        send_dm(sender_id, "No audit is saved yet.\n\nSend GROWTH to start your free audit.", ["GROWTH"])
+        send_dm(sender_id, "No audit is saved yet 🙂\n\nSend GROWTH to start your free audit.", ["GROWTH"])
         return
-
     if "---CB-AUDIT-SECTION---" in audit:
         audit_parts = [p.strip() for p in audit.split("---CB-AUDIT-SECTION---") if p.strip()]
     else:
         audit_parts = split_text(audit, MAX_DM_CHARS)
-
     for part in audit_parts:
         for msg in split_text(part, MAX_DM_CHARS):
             send_dm(sender_id, msg)
-            time.sleep(1.0)
-    send_dm(sender_id, msg_after_audit(), ["SEE PREVIEW", "FIX THIS", "VIEW AUDIT"])
+            time.sleep(0.7)
+    send_dm(sender_id, "✅ That’s the audit again.\n\nWhat would you like next?", ["SEE PREVIEW", "FIX THIS"])
+
+
+def preview_file_exists(filename: str) -> bool:
+    return bool(filename and os.path.exists(os.path.join(PREVIEW_DIR, filename)))
+
 
 def handle_preview(sender_id: str, state: Dict[str, Any]):
     if not state.get("latest_audit"):
-        send_dm(sender_id, "The preview needs the audit first.\n\nSend the Instagram profile screenshot so I can review it properly.")
-        state["step"] = "ask_screenshot"
+        send_dm(
+            sender_id,
+            "The preview comes after the audit 🙂\n\nSend GROWTH first, then I’ll ask 3 easy questions and review the profile properly.",
+            ["GROWTH"]
+        )
+        state["step"] = "new"
         STORE.save_state(sender_id, state)
         return
     if FOLLOW_REQUIRED and not is_follow_verified(sender_id, state, force=True):
         state["step"] = "follow_gate"
         STORE.save_state(sender_id, state)
-        send_dm(sender_id, f"To unlock the free preview, follow @{FOLLOW_ACCOUNT_USERNAME} first.\n\nOnce done, tap I FOLLOWED.", ["I FOLLOWED", "WHY FOLLOW", "CANCEL"])
+        send_dm(sender_id, f"To unlock the free preview, follow @{FOLLOW_ACCOUNT_USERNAME} first 👋\n\nOnce done, tap I FOLLOWED.", ["I FOLLOWED", "WHY FOLLOW", "CANCEL"])
         return
-    send_dm(sender_id, "Creating the profile preview now.\n\nIt will show the improved bio, highlights, and content grid from your audit.")
-    state["step"] = "preview_processing"
+
+    filename = state.get("preview_filename", "")
+    already_generated = str(state.get("preview_generated", "false")).lower() == "true"
+    if not preview_file_exists(filename):
+        if already_generated:
+            send_dm(sender_id, "Here is your profile preview again 👇")
+        else:
+            send_dm(sender_id, "Creating your profile preview now 🎨\n\nI’ll use the audit to show a clearer bio, highlights, and first grid direction.")
+        filename = generate_preview_image(state)
+        state["preview_filename"] = filename
+        if PUBLIC_BASE_URL:
+            state["preview_url"] = f"{PUBLIC_BASE_URL}/preview/{filename}"
+    else:
+        send_dm(sender_id, "Here is your profile preview again 👇")
+
+    state["step"] = "preview_sent"
     state["preview_requested"] = "true"
+    state["preview_generated"] = "true"
     state["lead_temperature"] = "hot"
     STORE.save_state(sender_id, state)
-    filename = generate_preview_image(state)
-    if PUBLIC_BASE_URL:
-        image_url = f"{PUBLIC_BASE_URL}/preview/{filename}"
-        send_image(sender_id, image_url)
+
+    if PUBLIC_BASE_URL and state.get("preview_url"):
+        result = send_image(sender_id, state["preview_url"])
+        if result.get("error"):
+            send_dm(sender_id, "The preview is ready, but Instagram did not load the image here 😕\n\nPlease try SEE PREVIEW again in a moment.")
     else:
-        send_dm(sender_id, "The preview is prepared, but I could not send the image here. Please try SEE PREVIEW again in a moment.")
-    state["preview_generated"] = "true"
-    state["step"] = "preview_sent"
-    STORE.save_state(sender_id, state)
-    time.sleep(1.2)
+        send_dm(sender_id, "The preview is ready, but I could not send the image here 😕\n\nPlease try again in a moment.")
+    time.sleep(0.8)
     send_dm(sender_id, msg_after_preview(), ["FIX THIS", "VIEW AUDIT"])
 
+
 def start_conversion(sender_id: str, state: Dict[str, Any], text: str = ""):
+    if not state.get("latest_audit"):
+        send_dm(
+            sender_id,
+            "I can help with that 🙂\n\nFirst I need to audit the profile so the advice is specific, not generic.\n\nSend GROWTH to start the free audit.",
+            ["GROWTH"]
+        )
+        return
     state["lead_temperature"] = "hot"
     state["step"] = "conversion_pain"
     STORE.save_state(sender_id, state)
     msg = build_ai_conversion_message(state, text, "pain")
-    send_dm(sender_id, msg, ["YES", "TELL ME", "NOT NOW"])
+    send_dm(sender_id, msg, ["YES", "SHOW ME", "NOT NOW"])
+
 
 def advance_conversion(sender_id: str, state: Dict[str, Any], text: str, target_stage: Optional[str] = None):
     step = state.get("step")
+    norm = normalize(text)
 
-    # Save the user's answer before moving forward.
-    # This prevents goal/timeline/scope from being lost when a target stage is passed.
-    if step == "conversion_goal":
+    # Save answer only when the user is actually answering a qualification question.
+    if step == "conversion_goal" and norm not in YES_WORDS:
         state["goal"] = text.strip()[:150]
-    elif step == "conversion_timeline":
+    elif step == "conversion_timeline" and norm not in YES_WORDS:
         state["timeline"] = text.strip()[:150]
-    elif step == "conversion_scope":
+    elif step == "conversion_scope" and norm not in YES_WORDS:
         state["scope_preference"] = text.strip()[:200]
 
     if target_stage:
@@ -1620,40 +1770,41 @@ def advance_conversion(sender_id: str, state: Dict[str, Any], text: str, target_
         "ask_contact": "ask_contact",
         "objection": step,
     }
-
     state["step"] = next_step_map.get(stage, state.get("step"))
     if stage in ["goal", "timeline", "scope", "ask_contact"]:
         state["lead_temperature"] = "very_hot"
-
     STORE.save_state(sender_id, state)
 
     msg = build_ai_conversion_message(state, text, stage)
-    if stage in ["pain", "reframe", "solution"]:
-        send_dm(sender_id, msg, ["YES", "TELL ME", "NOT NOW"])
-    else:
-        send_dm(sender_id, msg)
+    # No repeated buttons during the qualification flow.
+    send_dm(sender_id, msg)
+
 
 def handle_objection(sender_id: str, state: Dict[str, Any], text: str, objection_type: str):
+    if not state.get("latest_audit"):
+        send_dm(
+            sender_id,
+            "Good question 🙂\n\nThe audit is free. First I’ll review the profile, then the next step can be suggested properly.\n\nSend GROWTH to start.",
+            ["GROWTH"]
+        )
+        return
     state["objection_type"] = objection_type
     state["lead_temperature"] = "hot"
-    # Price/details objections should not ask contact directly. Move toward goal qualification.
-    if objection_type in ["price_question", "asks_details", "asks_results", "budget_low", "trust_issue", "already_has_designer", "wants_to_do_self"]:
-        state["step"] = "conversion_goal"
-        STORE.save_state(sender_id, state)
-        msg = build_ai_conversion_message(state, text, "objection")
-        send_dm(sender_id, msg)
-        return
     if objection_type in ["thinking_delay", "not_now"]:
         state["lead_temperature"] = "warm"
         STORE.save_state(sender_id, state)
-        send_dm(sender_id, "No issue.\n\nKeep the audit as your starting point. If you want ClientBoost to map the fix properly later, reply FIX THIS.", ["FIX THIS", "VIEW AUDIT"])
+        send_dm(sender_id, "No issue 🙂\n\nKeep the audit as your starting point.\n\nWhen you want ClientBoost to map the fix properly, reply FIX THIS.")
         return
-    start_conversion(sender_id, state, text)
+    state["step"] = "conversion_goal"
+    STORE.save_state(sender_id, state)
+    msg = build_ai_conversion_message(state, text, "objection")
+    send_dm(sender_id, msg)
+
 
 def handle_contact(sender_id: str, state: Dict[str, Any], text: str):
     contact, ctype = contact_from_text(text)
     if not contact:
-        send_dm(sender_id, "Send the best contact detail for you — WhatsApp number or email.")
+        send_dm(sender_id, "Send your best contact detail — WhatsApp number or email 🙂")
         return
     state["contact_info"] = contact
     state["contact_type"] = ctype or "contact"
@@ -1666,30 +1817,31 @@ def handle_contact(sender_id: str, state: Dict[str, Any], text: str):
     STORE.save_final_lead_once(sender_id, latest_user_message=text)
     send_dm(sender_id, msg_senior_review())
 
+
 def handle_unclear(sender_id: str, state: Dict[str, Any]):
     step = state.get("step", "new")
     if step == "follow_gate":
-        send_dm(sender_id, "Choose one option:", ["I FOLLOWED", "WHY FOLLOW", "CANCEL"])
+        send_dm(sender_id, "Choose one option 🙂", ["I FOLLOWED", "WHY FOLLOW", "CANCEL"])
     elif step == "ask_profile_name":
-        send_dm(sender_id, "What is the profile or brand name?")
+        send_dm(sender_id, "What name should I use for the profile or brand? 🙂")
     elif step == "ask_profile_type":
-        send_dm(sender_id, "What best describes this Instagram profile?")
-    elif step == "ask_location_or_audience":
-        send_dm(sender_id, "Who should this profile attract?")
+        send_dm(sender_id, "What is this profile about? 🙂")
+    elif step == "ask_goal_or_audience":
+        send_dm(sender_id, "What do you want from this profile — followers, customers, bookings, sales, trust, or brand deals? 🎯")
     elif step == "ask_screenshot":
-        send_dm(sender_id, "Send a screenshot of the Instagram profile.")
+        send_dm(sender_id, "Send one screenshot of the Instagram profile 📸")
     elif step == "audit_sent":
-        send_dm(sender_id, "Choose the next step:", ["SEE PREVIEW", "FIX THIS", "VIEW AUDIT"])
+        send_dm(sender_id, "What would you like next? 🙂", ["SEE PREVIEW", "FIX THIS", "VIEW AUDIT"])
     elif step == "preview_sent":
-        send_dm(sender_id, "Choose the next step:", ["FIX THIS", "VIEW AUDIT"])
+        send_dm(sender_id, "What would you like next? 🙂", ["FIX THIS", "VIEW AUDIT"])
     elif step.startswith("conversion"):
-        advance_conversion(sender_id, state, "yes")
+        advance_conversion(sender_id, state, text="yes")
     elif step == "ask_contact":
-        send_dm(sender_id, "Send the best contact detail for you — WhatsApp number or email.")
+        send_dm(sender_id, "Send your best contact detail — WhatsApp number or email 🙂")
     elif step == "senior_review":
         return
     else:
-        send_dm(sender_id, "Send GROWTH to start your free Instagram audit.", ["GROWTH"])
+        send_dm(sender_id, "Send GROWTH to start your free Instagram audit 🚀", ["GROWTH"])
 
 # ============================================================
 # MAIN MESSAGE ROUTER
@@ -1706,13 +1858,13 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
 
     state = STORE.get_state(sender_id)
 
-    # Owner reset always works.
+    # Owner reset always works, even after senior review.
     if text == OWNER_RESET_CODE:
         STORE.reset_state(sender_id)
-        send_dm(sender_id, "Owner reset complete.\n\nSend GROWTH to test from the beginning.", ["GROWTH"])
+        send_dm(sender_id, "Owner reset complete ✅\n\nSend GROWTH to test from the beginning.", ["GROWTH"])
         return
 
-    # After senior review, automation stays silent. Human/senior strategist owns the chat.
+    # After senior review, automation stays silent so a human/senior strategist can own the chat.
     if state.get("step") == "senior_review" or str(state.get("handover", "false")).lower() == "true":
         return
 
@@ -1722,15 +1874,15 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
             state["step"] = "new"
             STORE.save_state(sender_id, state)
 
-    # Screenshot handling
+    # Screenshot handling.
     if image_url:
         if state.get("step") == "ask_screenshot":
             handle_screenshot(sender_id, state, image_url)
         else:
             if state.get("latest_audit"):
-                send_dm(sender_id, "I received the image.\n\nYour latest audit is already active. Choose the next step:", ["SEE PREVIEW", "FIX THIS", "VIEW AUDIT"])
+                send_dm(sender_id, "I received the image 📸\n\nI already have your recent audit here. What would you like next?", ["SEE PREVIEW", "FIX THIS", "VIEW AUDIT"])
             else:
-                send_dm(sender_id, "I received the image.\n\nFirst, send GROWTH so I can review it in the right order.", ["GROWTH"])
+                send_dm(sender_id, "I received the image 📸\n\nFirst send GROWTH so I can review it in the right order.", ["GROWTH"])
         return
 
     if not text:
@@ -1739,31 +1891,46 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
 
     step = state.get("step", "new")
     t_norm = normalize(text)
+    pre_intent = direct_intent(text)
 
-    # State-answer priority:
-    # In these steps, the user's text is usually an answer, not a command.
-    # This prevents names like "Budget Cafe" or goals like "more followers"
-    # from being misread as objections or result questions.
+    # In these steps, the user's message is usually an answer, not an objection/command.
     priority_commands = {"cancel", "reset", "restart"}
-
     if t_norm in priority_commands:
-        intent = direct_intent(text)
+        intent = pre_intent
     elif step == "ask_profile_name":
         intent = "answer_profile_name"
     elif step == "ask_profile_type":
         intent = "answer_profile_type"
-    elif step == "ask_location_or_audience":
-        intent = "answer_location_or_audience"
+    elif step == "ask_goal_or_audience":
+        intent = "answer_goal_or_audience"
     elif step == "conversion_goal":
-        intent = "answer_goal"
+        if pre_intent in OBJECTION_INTENTS:
+            intent = pre_intent
+        elif t_norm in YES_WORDS:
+            send_dm(sender_id, deterministic_conversion_message(state, "goal"))
+            return
+        else:
+            intent = "answer_goal"
     elif step == "conversion_timeline":
-        intent = "answer_timeline"
+        if pre_intent in OBJECTION_INTENTS:
+            intent = pre_intent
+        elif t_norm in YES_WORDS:
+            send_dm(sender_id, deterministic_conversion_message(state, "timeline"))
+            return
+        else:
+            intent = "answer_timeline"
     elif step == "conversion_scope":
-        intent = "answer_scope"
+        if pre_intent in OBJECTION_INTENTS:
+            intent = pre_intent
+        elif t_norm in YES_WORDS:
+            send_dm(sender_id, deterministic_conversion_message(state, "scope"))
+            return
+        else:
+            intent = "answer_scope"
     elif step == "ask_contact" and contact_from_text(text)[0]:
         intent = "contact_sent"
     else:
-        intent = direct_intent(text)
+        intent = pre_intent
 
     if not intent:
         understood = ai_understand_message(state, text)
@@ -1771,17 +1938,20 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
             intent = understood.get("intent")
             if understood.get("profile_category") in PROFILE_CATEGORIES:
                 state["profile_category"] = understood.get("profile_category")
-            if understood.get("clean_answer") and intent in ["answer_profile_type", "answer_location_or_audience", "answer_profile_name", "answer_goal", "answer_timeline", "answer_scope"]:
+            if understood.get("clean_answer") and intent in [
+                "answer_profile_type", "answer_profile_name", "answer_goal", "answer_timeline",
+                "answer_scope", "answer_goal_or_audience"
+            ]:
                 text = understood.get("clean_answer")
             if understood.get("objection_type") and understood.get("objection_type") != "none":
                 state["objection_type"] = understood.get("objection_type")
         else:
             intent = "unclear"
 
-    # Route intent
+    # Route intent.
     if intent == "owner_reset":
         STORE.reset_state(sender_id)
-        send_dm(sender_id, "Owner reset complete.\n\nSend GROWTH to test from the beginning.", ["GROWTH"])
+        send_dm(sender_id, "Owner reset complete ✅\n\nSend GROWTH to test from the beginning.", ["GROWTH"])
     elif intent == "start_audit":
         handle_start(sender_id, state)
     elif intent == "follow_confirmed" or (intent == "generic_done" and step == "follow_gate"):
@@ -1791,17 +1961,17 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
     elif intent == "cancel":
         state["step"] = "new"
         STORE.save_state(sender_id, state)
-        send_dm(sender_id, "Cancelled.\n\nSend GROWTH whenever you are ready.", ["GROWTH"])
+        send_dm(sender_id, "Cancelled ✅\n\nSend GROWTH whenever you are ready.", ["GROWTH"])
     elif intent == "soft_reset":
         state["step"] = "new"
         STORE.save_state(sender_id, state)
-        send_dm(sender_id, "No problem.\n\nSend GROWTH whenever you are ready.", ["GROWTH"])
+        send_dm(sender_id, "No problem ✅\n\nSend GROWTH whenever you are ready.", ["GROWTH"])
     elif intent == "answer_profile_name":
         handle_profile_name(sender_id, state, text)
     elif intent == "answer_profile_type":
         handle_profile_type(sender_id, state, text)
-    elif intent == "answer_location_or_audience":
-        handle_location(sender_id, state, text)
+    elif intent == "answer_goal_or_audience":
+        handle_goal_or_audience(sender_id, state, text)
     elif intent == "request_latest":
         handle_latest(sender_id, state)
     elif intent == "request_preview":
@@ -1809,28 +1979,37 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
     elif intent == "request_new_audit":
         allowed, reason = can_start_new_audit(state)
         if allowed:
+            state = clear_audit_flow_fields(state)
             state["step"] = "new"
             STORE.save_state(sender_id, state)
             handle_start(sender_id, state)
         else:
             send_dm(sender_id, reason, ["VIEW AUDIT", "SEE PREVIEW", "FIX THIS"])
     elif intent == "request_help":
-        start_conversion(sender_id, state, text)
-    elif intent in ["price_question", "asks_details", "trust_issue", "thinking_delay", "not_now", "already_has_designer", "wants_to_do_self", "budget_low", "asks_results"]:
-        handle_objection(sender_id, state, text, intent)
+        if not state.get("latest_audit"):
+            send_dm(
+                sender_id,
+                "I can help with that 🙂\n\nFirst I need to audit the profile so the advice is specific, not generic.\n\nSend GROWTH to start the free audit.",
+                ["GROWTH"]
+            )
+        else:
+            start_conversion(sender_id, state, text)
+    elif intent in OBJECTION_INTENTS:
+        if not state.get("latest_audit"):
+            send_dm(
+                sender_id,
+                "Good question 🙂\n\nThe audit is free. First I’ll review the profile, then the next step can be suggested properly.\n\nSend GROWTH to start.",
+                ["GROWTH"]
+            )
+        else:
+            handle_objection(sender_id, state, text, intent)
     elif intent == "yes":
         if step in ["audit_sent", "preview_sent"]:
             start_conversion(sender_id, state, text)
         elif step in ["conversion_pain", "conversion_reframe", "conversion_solution"]:
             advance_conversion(sender_id, state, text)
-        elif step == "conversion_goal":
-            send_dm(sender_id, deterministic_conversion_message(state, "goal"))
-        elif step == "conversion_timeline":
-            send_dm(sender_id, deterministic_conversion_message(state, "timeline"))
-        elif step == "conversion_scope":
-            send_dm(sender_id, deterministic_conversion_message(state, "scope"))
         elif step == "ask_contact":
-            send_dm(sender_id, "Send the best contact detail for you — WhatsApp number or email.")
+            send_dm(sender_id, "Send your best contact detail — WhatsApp number or email 🙂")
         else:
             handle_unclear(sender_id, state)
     elif intent == "answer_goal":
@@ -1840,6 +2019,7 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
     elif intent == "answer_scope":
         advance_conversion(sender_id, state, text, "ask_contact")
     elif intent == "contact_sent":
+        # Safety: save contact only at the contact step. If sent early, continue conversion first.
         if step == "ask_contact":
             handle_contact(sender_id, state, text)
         elif step in ["audit_sent", "preview_sent"]:
@@ -1849,7 +2029,6 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
         else:
             handle_unclear(sender_id, state)
     else:
-        # If user responds during conversion, keep moving one step at a time.
         if step in ["conversion_pain", "conversion_reframe", "conversion_solution", "conversion_goal", "conversion_timeline", "conversion_scope"]:
             advance_conversion(sender_id, state, text)
         else:
@@ -1862,9 +2041,16 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
 def home():
     return "ClientBoost Bot is running", 200
 
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "service": "clientboost-bot"}), 200
+
+
 @app.route("/preview/<filename>", methods=["GET"])
 def preview_file(filename):
     return send_from_directory(PREVIEW_DIR, filename)
+
 
 @app.route("/webhook", methods=["GET"])
 def verify():
@@ -1874,6 +2060,7 @@ def verify():
     if mode == "subscribe" and token == VERIFY_TOKEN:
         return challenge or "", 200
     return "Forbidden", 403
+
 
 @app.route("/webhook", methods=["POST"])
 def webhook():

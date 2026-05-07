@@ -1,8 +1,8 @@
 # ============================================================
-# ClientBoost — Instagram Growth Audit + Preview + Lead Funnel
+# ClientBoost â€” Instagram Growth Audit + Specific Preview + Lead Funnel
 # Single-file Render deployment version
 # Core stack: Flask + Meta Instagram Messaging API + Gemini + Google Sheets + Pillow
-# Free-stack locked final version
+# Final production-oriented version â€” specific audit, non-generic preview, soft follow unlock
 # ============================================================
 
 import os
@@ -33,6 +33,7 @@ except Exception:
     Credentials = None
 
 app = Flask(__name__)
+APP_VERSION = "clientboost-final-specific-v3-2026-05-07"
 
 # ============================================================
 # ENVIRONMENT
@@ -44,36 +45,47 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "clientboost2024")
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN", "")
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 
 OWNER_RESET_CODE = os.environ.get("OWNER_RESET_CODE", "CBRESET2026")
-FOLLOW_REQUIRED = os.environ.get("FOLLOW_REQUIRED", "true").lower() == "true"
+FOLLOW_REQUIRED = env_bool("FOLLOW_REQUIRED", True)
 FOLLOW_ACCOUNT_USERNAME = os.environ.get("FOLLOW_ACCOUNT_USERNAME", "clientboost.in")
-FOLLOW_VERIFY_MODE = os.environ.get("FOLLOW_VERIFY_MODE", "strict").lower()
+# Soft is default because Instagram follow verification is unreliable for many IG messaging setups.
+# Values: soft, strict, off
+FOLLOW_VERIFY_MODE = os.environ.get("FOLLOW_VERIFY_MODE", "soft").strip().lower()
+if FOLLOW_VERIFY_MODE not in {"soft", "strict", "off"}:
+    FOLLOW_VERIFY_MODE = "soft"
 FOLLOW_CACHE_HOURS = env_int("FOLLOW_CACHE_HOURS", 24)
 
 AUDIT_COOLDOWN_DAYS = env_int("AUDIT_COOLDOWN_DAYS", 7)
 SESSION_EXPIRY_DAYS = env_int("SESSION_EXPIRY_DAYS", 3)
 
-# Free-stack defaults. Env can override, but defaults avoid unknown / preview model names.
 GEMINI_AUDIT_API_KEYS = [
     k.strip() for k in os.environ.get("GEMINI_AUDIT_API_KEYS", os.environ.get("GEMINI_API_KEY", "")).split(",") if k.strip()
 ]
 GEMINI_CONVERSION_API_KEYS = [
     k.strip() for k in os.environ.get("GEMINI_CONVERSION_API_KEYS", ",".join(GEMINI_AUDIT_API_KEYS)).split(",") if k.strip()
 ]
+# Free-stack friendly defaults. Env can override.
 GEMINI_AUDIT_MODELS = [
     m.strip() for m in os.environ.get(
         "GEMINI_AUDIT_MODELS",
-        "gemini-2.5-flash,gemini-2.5-flash-lite"
+        "gemini-2.5-flash,gemini-2.0-flash,gemini-2.5-flash-lite"
     ).split(",") if m.strip()
 ]
 GEMINI_CONVERSION_MODELS = [
     m.strip() for m in os.environ.get(
         "GEMINI_CONVERSION_MODELS",
-        "gemini-2.5-flash,gemini-2.5-flash-lite"
+        "gemini-2.5-flash,gemini-2.0-flash,gemini-2.5-flash-lite"
     ).split(",") if m.strip()
 ]
 
@@ -105,13 +117,13 @@ USER_STATE_HEADERS = [
 FINAL_LEADS_HEADERS = [
     "timestamp", "sender_id", "instagram_username", "profile_name", "profile_type_raw",
     "profile_category", "target_location_or_audience", "audit_score", "main_gap",
-    "top_fix", "preview_requested", "preview_generated", "preview_style", "preview_url",
+    "top_fix", "specific_strengths", "priority_gaps", "preview_bio", "preview_highlights",
+    "preview_grid", "preview_requested", "preview_generated", "preview_style", "preview_url",
     "lead_temperature", "objection_type", "goal", "timeline", "scope_preference",
     "contact_info", "contact_type", "handover_status", "recommended_offer",
     "session_status", "latest_user_message"
 ]
 
-# Exact command matching. This prevents words like "growth" inside normal sentences from restarting the flow.
 DIRECT_COMMANDS = {
     "growth": "start_audit",
     "start": "start_audit",
@@ -119,8 +131,11 @@ DIRECT_COMMANDS = {
     "i followed": "follow_confirmed",
     "followed": "follow_confirmed",
     "done": "generic_done",
+    "yes done": "follow_confirmed",
     "why follow": "ask_why_follow",
     "cancel": "cancel",
+    "don't": "cancel",
+    "dont": "cancel",
     "preview": "request_preview",
     "see preview": "request_preview",
     "fix this": "request_help",
@@ -144,25 +159,29 @@ DIRECT_COMMANDS = {
 }
 
 YES_WORDS = {"yes", "y", "ok", "okay", "show me", "tell me", "explain"}
+UNCERTAIN_WORDS = {"idk", "i don't know", "i dont know", "not sure", "no idea", "confused"}
 OBJECTION_INTENTS = {
     "price_question", "asks_details", "trust_issue", "thinking_delay", "not_now",
     "already_has_designer", "wants_to_do_self", "budget_low", "asks_results"
 }
+POST_HANDOVER_INTENTS = {"price_question", "asks_details", "asks_results", "trust_issue", "request_latest", "request_preview"}
 
 PROFILE_CATEGORIES: Dict[str, Dict[str, Any]] = {
     "food_restaurant": {
         "keywords": ["restaurant", "cafe", "food", "bakery", "cloud kitchen", "takeaway", "delivery", "burger", "pizza", "juice", "hotel", "nosh", "biryani", "kitchen"],
         "style": "Warm Commercial",
         "highlights": ["Menu", "Reviews", "Kitchen", "Offers", "Order", "Location"],
-        "grid": ["Food", "Review", "Offer", "Kitchen", "Bestseller", "Combo", "Order", "Behind", "CTA"],
+        "grid": ["Bestseller", "Menu Proof", "Review", "Kitchen BTS", "Offer", "Order CTA", "Location", "Combo", "FAQ"],
         "angle": "orders, trust, craving, and WhatsApp conversion",
+        "goal_type": "sales",
     },
     "beauty_salon": {
         "keywords": ["salon", "beauty", "makeup", "bridal", "nails", "spa", "boutique", "fashion", "hair", "skincare"],
         "style": "Warm Commercial",
         "highlights": ["Services", "Results", "Pricing", "Reviews", "Bridal", "Booking"],
-        "grid": ["Result", "Service", "Review", "Offer", "Process", "Before", "After", "FAQ", "Booking"],
+        "grid": ["Result", "Service", "Review", "Offer", "Process", "Before After", "FAQ", "Pricing", "Booking"],
         "angle": "bookings through transformation proof and trust",
+        "goal_type": "leads",
     },
     "fitness_wellness": {
         "keywords": ["gym", "fitness", "yoga", "trainer", "workout", "zumba", "crossfit", "nutrition", "wellness"],
@@ -170,6 +189,7 @@ PROFILE_CATEGORIES: Dict[str, Dict[str, Any]] = {
         "highlights": ["Programs", "Results", "Trainers", "Reviews", "Plans", "Join"],
         "grid": ["Workout", "Result", "Trainer", "Tip", "Plan", "Review", "Class", "Diet", "Join"],
         "angle": "membership enquiries, transformation proof, and authority",
+        "goal_type": "leads",
     },
     "clinic_healthcare": {
         "keywords": ["clinic", "dental", "doctor", "hospital", "skin", "physio", "physiotherapy", "ayurveda", "health", "medical"],
@@ -177,48 +197,39 @@ PROFILE_CATEGORIES: Dict[str, Dict[str, Any]] = {
         "highlights": ["Treatments", "Doctor", "Results", "Reviews", "FAQ", "Book"],
         "grid": ["Care", "Treatment", "Review", "FAQ", "Doctor", "Tip", "Trust", "Result", "Book"],
         "angle": "patient trust, clarity, and appointment conversion",
+        "goal_type": "leads",
     },
     "real_estate": {
         "keywords": ["real estate", "property", "plots", "land", "apartment", "villa", "realtor", "broker", "site", "flat"],
         "style": "Premium Structured",
         "highlights": ["Listings", "Site Visits", "Documents", "Reviews", "Areas", "Contact"],
-        "grid": ["Property", "Area", "Docs", "Visit", "Trust", "Review", "Price", "Guide", "CTA"],
+        "grid": ["Property", "Area Guide", "Docs Proof", "Site Visit", "Trust", "Review", "Price Clarity", "Buyer Guide", "CTA"],
         "angle": "buyer trust, documentation clarity, and site visit leads",
+        "goal_type": "leads",
     },
     "ecommerce_retail": {
         "keywords": ["store", "shop", "ecommerce", "products", "clothing", "jewellery", "accessories", "electronics", "retail", "brand"],
         "style": "Warm Commercial",
         "highlights": ["Products", "Offers", "Reviews", "New", "Delivery", "Order"],
-        "grid": ["Product", "Review", "Offer", "New", "Detail", "Use", "Proof", "Pack", "Order"],
+        "grid": ["Product", "Review", "Offer", "New Drop", "Details", "Use Case", "Proof", "Packing", "Order"],
         "angle": "product trust, repeat buying, and DM/WhatsApp orders",
-    },
-    "automotive_service": {
-        "keywords": ["car", "bike", "automobile", "detailing", "garage", "mechanic", "service center", "wash", "vehicle"],
-        "style": "Warm Commercial",
-        "highlights": ["Services", "Before", "After", "Reviews", "Pricing", "Book"],
-        "grid": ["Service", "Before", "After", "Review", "Tip", "Process", "Offer", "Trust", "Book"],
-        "angle": "service bookings through proof and transformation",
-    },
-    "education_coaching": {
-        "keywords": ["coaching", "classes", "school", "tuition", "academy", "course", "training", "institute", "teacher", "education"],
-        "style": "Modern Content Grid",
-        "highlights": ["Courses", "Results", "Students", "Reviews", "FAQ", "Enroll"],
-        "grid": ["Lesson", "Result", "Tip", "Student", "Proof", "FAQ", "Review", "Value", "Enroll"],
-        "angle": "admissions, trust, results, and student confidence",
+        "goal_type": "sales",
     },
     "professional_service": {
         "keywords": ["lawyer", "accountant", "architect", "interior", "consultant", "software", "finance", "insurance", "ca", "advocate"],
         "style": "Premium Structured",
         "highlights": ["Services", "Work", "Results", "Reviews", "FAQ", "Contact"],
-        "grid": ["Service", "Case", "Proof", "Tip", "Review", "Process", "FAQ", "Result", "CTA"],
+        "grid": ["Service", "Case Study", "Proof", "Tip", "Review", "Process", "FAQ", "Result", "CTA"],
         "angle": "authority, credibility, and consultation enquiries",
+        "goal_type": "leads",
     },
     "agency_service": {
         "keywords": ["agency", "marketing", "social media", "ads", "seo", "branding", "automation", "digital"],
         "style": "Premium Structured",
         "highlights": ["Services", "Results", "Proof", "Process", "FAQ", "Contact"],
-        "grid": ["Offer", "Result", "Proof", "Tip", "Process", "Case", "CTA", "Trust", "Lead"],
+        "grid": ["Offer", "Result", "Proof", "Tip", "Process", "Case Study", "CTA", "Trust", "Lead"],
         "angle": "high-trust lead generation and authority",
+        "goal_type": "leads",
     },
     "local_service": {
         "keywords": ["plumber", "electrician", "cleaning", "repair", "pest control", "home service", "technician", "local service"],
@@ -226,62 +237,7 @@ PROFILE_CATEGORIES: Dict[str, Dict[str, Any]] = {
         "highlights": ["Services", "Before", "After", "Reviews", "Pricing", "Call"],
         "grid": ["Service", "Before", "After", "Review", "Tip", "Problem", "Fix", "Offer", "Call"],
         "angle": "local calls, urgency, trust, and service bookings",
-    },
-    "hospitality_travel": {
-        "keywords": ["hotel", "resort", "travel", "tour", "homestay", "airbnb", "stay", "trip"],
-        "style": "Warm Commercial",
-        "highlights": ["Rooms", "Reviews", "Location", "Offers", "Food", "Book"],
-        "grid": ["Stay", "Room", "Review", "View", "Offer", "Food", "Guide", "Proof", "Book"],
-        "angle": "booking confidence, location appeal, and guest trust",
-    },
-    "event_wedding": {
-        "keywords": ["event", "wedding", "planner", "decor", "catering", "dj", "venue", "birthday"],
-        "style": "Warm Commercial",
-        "highlights": ["Work", "Packages", "Reviews", "Decor", "Events", "Book"],
-        "grid": ["Event", "Decor", "Review", "Package", "Before", "After", "Story", "Proof", "Book"],
-        "angle": "event enquiries through visual proof and trust",
-    },
-    "home_lifestyle_business": {
-        "keywords": ["furniture", "decor", "home", "interior decor", "kitchenware", "lifestyle store"],
-        "style": "Warm Commercial",
-        "highlights": ["Products", "Rooms", "Reviews", "New", "Delivery", "Order"],
-        "grid": ["Product", "Room", "Review", "New", "Detail", "Use", "Proof", "Style", "Order"],
-        "angle": "lifestyle trust, product desire, and order enquiries",
-    },
-    "influencer_creator": {
-        "keywords": ["influencer", "creator", "blogger", "reels", "lifestyle", "vlogger", "content creator"],
-        "style": "Modern Content Grid",
-        "highlights": ["About", "Reels", "Collabs", "Media Kit", "Results", "Contact"],
-        "grid": ["Hook", "Story", "Value", "Lifestyle", "Reel", "Collab", "Insight", "Proof", "CTA"],
-        "angle": "identity, audience retention, and collaboration enquiries",
-    },
-    "personal_brand": {
-        "keywords": ["coach", "mentor", "speaker", "founder", "personal brand", "consultant", "public figure"],
-        "style": "Modern Content Grid",
-        "highlights": ["About", "Work", "Results", "Content", "Reviews", "Contact"],
-        "grid": ["Insight", "Story", "Proof", "Tip", "Value", "Offer", "Result", "Trust", "CTA"],
-        "angle": "authority, trust, and inbound enquiries",
-    },
-    "religious_education_content": {
-        "keywords": ["islamic", "quran", "dua", "duas", "hadith", "religious", "reminder", "spiritual", "deen", "islam"],
-        "style": "Editorial Creator",
-        "highlights": ["Reels", "Quran", "Duas", "Lessons", "About", "Contact"],
-        "grid": ["Reminder", "Hadith", "Dua", "Reel", "Quote", "Lesson", "Carousel", "Story", "Follow"],
-        "angle": "saves, shares, trust, and clearer educational identity",
-    },
-    "entertainment_meme_page": {
-        "keywords": ["meme", "memes", "entertainment", "funny", "comedy", "viral", "fan page", "theme page"],
-        "style": "Editorial Creator",
-        "highlights": ["Best", "Reels", "Series", "About", "Viral", "Contact"],
-        "grid": ["Meme", "Reel", "Trend", "Relatable", "Series", "Story", "Hook", "CTA", "Follow"],
-        "angle": "shareability, repeat formats, and audience memory",
-    },
-    "artist_portfolio": {
-        "keywords": ["artist", "art", "portfolio", "painting", "illustration", "designer", "creative", "craft"],
-        "style": "Editorial Creator",
-        "highlights": ["Work", "BTS", "Process", "Reviews", "Shop", "Contact"],
-        "grid": ["Work", "Story", "Detail", "BTS", "Process", "Style", "Review", "Series", "CTA"],
-        "angle": "portfolio trust, visual identity, and commissions",
+        "goal_type": "leads",
     },
     "photographer_videographer": {
         "keywords": ["photographer", "videographer", "photo", "video", "cinematographer", "shoot", "wedding film"],
@@ -289,48 +245,47 @@ PROFILE_CATEGORIES: Dict[str, Dict[str, Any]] = {
         "highlights": ["Work", "Weddings", "Reels", "Reviews", "Packages", "Contact"],
         "grid": ["Shoot", "Story", "Detail", "BTS", "Reel", "Work", "Review", "Process", "CTA"],
         "angle": "portfolio clarity, booking confidence, and premium enquiry flow",
+        "goal_type": "leads",
     },
-    "fashion_lifestyle_creator": {
-        "keywords": ["fashion", "lifestyle", "model", "outfit", "ootd", "style", "beauty influencer"],
+    "personal_brand": {
+        "keywords": ["coach", "mentor", "speaker", "founder", "personal brand", "consultant", "public figure"],
+        "style": "Modern Content Grid",
+        "highlights": ["About", "Work", "Results", "Content", "Reviews", "Contact"],
+        "grid": ["Insight", "Story", "Proof", "Tip", "Value", "Offer", "Result", "Trust", "CTA"],
+        "angle": "authority, trust, and inbound enquiries",
+        "goal_type": "authority",
+    },
+    "religious_education_content": {
+        "keywords": ["islamic", "quran", "dua", "duas", "hadith", "religious", "reminder", "spiritual", "deen", "islam", "sunnah", "haqikat", "haqiqat", "allah"],
         "style": "Editorial Creator",
-        "highlights": ["Looks", "Reels", "Collabs", "Brands", "About", "Contact"],
-        "grid": ["Look", "Story", "Style", "Reel", "Trend", "Collab", "Tip", "Proof", "CTA"],
-        "angle": "aesthetic identity, audience retention, and brand collaborations",
+        "highlights": ["Start", "Quran", "Duas", "Hadith", "Reels", "Collab"],
+        "grid": ["Daily Dua", "Quran Reminder", "Hadith Lesson", "Save This", "Ask a Question", "Reel Reminder", "Story Poll", "Collab Info", "Follow CTA"],
+        "angle": "saves, shares, trust, follow conversion, and monetization path clarity",
+        "goal_type": "creator_monetization",
+    },
+    "entertainment_meme_page": {
+        "keywords": ["meme", "memes", "entertainment", "funny", "comedy", "viral", "fan page"],
+        "style": "Editorial Creator",
+        "highlights": ["Best", "Reels", "Series", "About", "Viral", "Contact"],
+        "grid": ["Meme", "Reel", "Trend", "Relatable", "Series", "Story", "Hook", "CTA", "Follow"],
+        "angle": "shareability, repeat formats, audience memory, and monetization path",
+        "goal_type": "creator_monetization",
     },
     "knowledge_creator": {
-        "keywords": ["knowledge", "facts", "finance tips", "business tips", "learning", "educational content", "explain"],
+        "keywords": ["knowledge", "facts", "finance tips", "business tips", "learning", "educational content", "explain", "education page"],
         "style": "Modern Content Grid",
         "highlights": ["Topics", "Best", "Series", "Resources", "About", "Contact"],
         "grid": ["Hook", "Explain", "Tip", "Carousel", "Myth", "Value", "Series", "Proof", "Follow"],
-        "angle": "saves, shares, clarity, and repeatable learning series",
+        "angle": "saves, shares, clarity, repeatable series, and monetization path",
+        "goal_type": "creator_monetization",
     },
-    "motivation_quotes_page": {
-        "keywords": ["motivation", "quotes", "quote page", "success", "mindset", "inspiration"],
+    "content_page_general": {
+        "keywords": ["page", "theme page", "content page", "quotes", "motivation", "community", "news", "updates"],
         "style": "Editorial Creator",
-        "highlights": ["Quotes", "Reels", "Stories", "Series", "About", "Contact"],
-        "grid": ["Quote", "Reel", "Story", "Lesson", "Reminder", "Carousel", "Series", "Value", "Follow"],
-        "angle": "shareable identity, memorable content series, and follow conversion",
-    },
-    "community_page": {
-        "keywords": ["community", "city page", "local page", "updates", "events", "public"],
-        "style": "Editorial Creator",
-        "highlights": ["Updates", "Events", "People", "Places", "About", "Contact"],
-        "grid": ["Update", "Event", "Place", "Story", "People", "Guide", "News", "Feature", "Follow"],
-        "angle": "local trust, community engagement, and repeat visits",
-    },
-    "nonprofit_social_page": {
-        "keywords": ["ngo", "nonprofit", "charity", "foundation", "social work", "cause"],
-        "style": "Editorial Creator",
-        "highlights": ["Mission", "Work", "Impact", "People", "Donate", "Contact"],
-        "grid": ["Cause", "Story", "Impact", "People", "Proof", "Need", "Update", "Trust", "CTA"],
-        "angle": "trust, mission clarity, and supporter action",
-    },
-    "news_media_local": {
-        "keywords": ["news", "media", "updates", "journal", "daily update", "local news"],
-        "style": "Editorial Creator",
-        "highlights": ["News", "Local", "Events", "Videos", "About", "Contact"],
-        "grid": ["News", "Update", "Explainer", "Video", "Local", "Alert", "Story", "Trust", "Follow"],
-        "angle": "credibility, clarity, and repeat audience behavior",
+        "highlights": ["Start", "Best", "Series", "Proof", "About", "Contact"],
+        "grid": ["Hook", "Value", "Series", "Save This", "Share", "Proof", "Story", "Collab", "Follow CTA"],
+        "angle": "followers, saves, shares, trust, and monetization path clarity",
+        "goal_type": "creator_monetization",
     },
     "default_general_profile": {
         "keywords": [],
@@ -338,6 +293,7 @@ PROFILE_CATEGORIES: Dict[str, Dict[str, Any]] = {
         "highlights": ["About", "Work", "Proof", "FAQ", "Contact"],
         "grid": ["Intro", "Value", "Proof", "Tip", "Story", "Offer", "FAQ", "Result", "CTA"],
         "angle": "clearer positioning, trust, and profile conversion",
+        "goal_type": "general",
     },
 }
 
@@ -443,24 +399,120 @@ def safe_username(value: str) -> str:
     return cleaned[:24] or "yourprofile"
 
 
-def has_emoji(text: str) -> bool:
-    return bool(re.search(r"[\U0001F300-\U0001FAFF✅🎯📸👀🙂🚀⭐⚡⭕✍🤝🎨👇😕]", text or ""))
-
-
 def clean_dm_text(text: str, limit: int = MAX_DM_CHARS) -> str:
     text = (text or "").replace("```", "").strip()
     text = re.sub(r"\n{3,}", "\n\n", text)
-    # Avoid visible internal wording if an LLM ever ignores instructions.
     blocked_patterns = [
-        r"\bbackend\b", r"\bautomation\b", r"\bAI\b", r"\bAI model\b", r"\bGemini\b",
-        r"\bquota\b", r"\bcooldown\b", r"\bapi\b", r"\btoken\b"
+        r"\bbackend\b", r"\bautomation\b", r"\bAI model\b", r"\bGemini\b",
+        r"\bquota\b", r"\bcooldown\b", r"\bapi\b", r"\btoken\b", r"\bJSON\b"
     ]
     for pattern in blocked_patterns:
         text = re.sub(pattern, "", text, flags=re.I)
     text = re.sub(r"[ \t]{2,}", " ", text)
-    if text and not has_emoji(text):
-        text = "🙂 " + text
+    if text and not re.search(r"[\U0001F300-\U0001FAFFâœ…ðŸŽ¯ðŸ“¸ðŸ‘€ðŸ™‚ðŸš€â­âš¡â­•âœðŸ¤ðŸŽ¨ðŸ‘‡ðŸ˜•ðŸ”ðŸ§©ðŸ“ŒðŸŸ¢ðŸŸ¡ðŸ”´]", text):
+        text = "ðŸ™‚ " + text
     return text[:limit].strip()
+
+
+def as_list(value: Any, fallback: Optional[List[str]] = None, limit: int = 6) -> List[str]:
+    fallback = fallback or []
+    if isinstance(value, list):
+        items = value
+    elif isinstance(value, str):
+        parsed = safe_json_loads(value, None)
+        if isinstance(parsed, list):
+            items = parsed
+        else:
+            items = re.split(r"\s*[|;/]\s*|\n+", value)
+    else:
+        items = fallback
+    cleaned: List[str] = []
+    for item in items:
+        t = str(item).strip()
+        if t and t.lower() not in {"none", "not visible", "not clearly visible", "n/a", "na"}:
+            cleaned.append(t[:90])
+    return cleaned[:limit] if cleaned else fallback[:limit]
+
+
+def to_json_list(value: Any, fallback: Optional[List[str]] = None, limit: int = 9) -> str:
+    return json.dumps(as_list(value, fallback or [], limit), ensure_ascii=False)
+
+
+def state_json_list(state: Dict[str, Any], key: str, fallback: Optional[List[str]] = None, limit: int = 9) -> List[str]:
+    return as_list(state.get(key, ""), fallback or [], limit)
+
+
+def profile_is_creator_monetization(state: Dict[str, Any]) -> bool:
+    category = state.get("profile_category") or "default_general_profile"
+    cfg = PROFILE_CATEGORIES.get(category, PROFILE_CATEGORIES["default_general_profile"])
+    return cfg.get("goal_type") == "creator_monetization"
+
+
+def prepare_audit_image(image: Image.Image) -> Image.Image:
+    img = image.convert("RGB")
+    w, h = img.size
+    target_w = 1440
+    if w < target_w:
+        ratio = target_w / max(1, w)
+        img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+    try:
+        from PIL import ImageFilter, ImageEnhance
+        img = ImageEnhance.Contrast(img).enhance(1.18)
+        img = ImageEnhance.Sharpness(img).enhance(1.35)
+        img = img.filter(ImageFilter.SHARPEN)
+    except Exception:
+        pass
+    return img
+
+
+def facts_have_useful_detail(facts: Dict[str, Any]) -> bool:
+    if not isinstance(facts, dict):
+        return False
+    values = []
+    for key in ["username_visible", "display_name_visible", "bio_lines_visible", "highlight_labels_visible", "post_cover_text_visible"]:
+        values.extend(as_list(facts.get(key), [], 8))
+    joined = " ".join(values).lower()
+    if not values:
+        return False
+    if joined.strip() in {"not clearly visible"}:
+        return False
+    return len(joined) >= 20 or len(values) >= 3
+
+
+def is_generic_audit(data: Dict[str, Any]) -> bool:
+    joined = json.dumps(data, ensure_ascii=False).lower()
+    generic_terms = [
+        "needs clearer structure", "not clear enough from the visible screenshot", "add proof",
+        "stronger cta", "content pillars", "random posting", "visitors understand", "generic"
+    ]
+    hits = sum(1 for term in generic_terms if term in joined)
+    evidence = data.get("visible_facts") or data.get("raw_extracted_facts") or {}
+    evidence_text = json.dumps(evidence, ensure_ascii=False).strip("{}[] \n")
+    return hits >= 4 and len(evidence_text) < 120
+
+
+def calculate_recommended_offer(state: Dict[str, Any]) -> str:
+    category = state.get("profile_category", "default_general_profile")
+    goal = normalize(state.get("goal", ""))
+    scope = normalize(state.get("scope_preference", ""))
+    score_raw = str(state.get("audit_score", ""))
+    score = int(float(score_raw)) if score_raw.replace(".", "", 1).isdigit() else 0
+
+    if profile_is_creator_monetization(state):
+        if "full" in scope or "manage" in scope or "system" in scope:
+            return "Creator Growth + Monetization System"
+        if any(x in goal for x in ["money", "monet", "collab", "promo", "brand", "paid", "traffic"]):
+            return "Content Page Monetization Setup"
+        return "Profile + Content Direction Setup"
+
+    if "full" in scope or "manage" in scope or "system" in scope:
+        return "Full Growth System"
+    if any(x in goal for x in ["sales", "booking", "enquir", "lead", "client", "customer", "order"]):
+        if category in ["food_restaurant", "beauty_salon", "real_estate", "clinic_healthcare", "professional_service", "local_service"]:
+            return "Growth Setup + Lead System"
+    if score and score < 55:
+        return "Profile Fix + Growth Setup"
+    return "Growth Setup"
 
 
 def clear_audit_flow_fields(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -500,26 +552,17 @@ def clear_audit_flow_fields(state: Dict[str, Any]) -> Dict[str, Any]:
         "handover": "false",
         "cooldown_until": "",
         "final_saved": "false",
+        "visible_facts_json": "{}",
+        "raw_extracted_facts_json": "{}",
+        "specific_strengths_json": "[]",
+        "priority_gaps_json": "[]",
+        "preview_bio": "",
+        "preview_highlights_json": "[]",
+        "preview_grid_json": "[]",
+        "audit_confidence": "",
     })
     state.update(keep)
     return state
-
-
-def calculate_recommended_offer(state: Dict[str, Any]) -> str:
-    category = state.get("profile_category", "default_general_profile")
-    goal = normalize(state.get("goal", ""))
-    scope = normalize(state.get("scope_preference", ""))
-    score_raw = str(state.get("audit_score", ""))
-    score = int(float(score_raw)) if score_raw.replace(".", "", 1).isdigit() else 0
-
-    if "full" in scope or "manage" in scope or "system" in scope:
-        return "Full Growth System"
-    if any(x in goal for x in ["sales", "booking", "enquir", "lead", "client", "customer", "order"]):
-        if category in ["food_restaurant", "beauty_salon", "real_estate", "clinic_healthcare", "professional_service", "local_service"]:
-            return "Growth Setup + Lead System"
-    if score and score < 55:
-        return "Profile Fix + Growth Setup"
-    return "Growth Setup"
 
 # ============================================================
 # GOOGLE SHEETS STORE
@@ -677,6 +720,11 @@ class SheetStore:
             "audit_score": state.get("audit_score", ""),
             "main_gap": state.get("main_gap", ""),
             "top_fix": state.get("top_fix", ""),
+            "specific_strengths": state.get("specific_strengths_json", ""),
+            "priority_gaps": state.get("priority_gaps_json", ""),
+            "preview_bio": state.get("preview_bio", ""),
+            "preview_highlights": state.get("preview_highlights_json", ""),
+            "preview_grid": state.get("preview_grid_json", ""),
             "preview_requested": state.get("preview_requested", "false"),
             "preview_generated": state.get("preview_generated", "false"),
             "preview_style": state.get("preview_style", ""),
@@ -713,7 +761,6 @@ STORE = SheetStore()
 # META MESSAGING
 # ============================================================
 def send_typing_action(recipient_id: str) -> None:
-    # Best-effort only. Some Instagram setups ignore sender actions.
     if not PAGE_ACCESS_TOKEN:
         return
     url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/me/messages"
@@ -740,7 +787,7 @@ def post_to_meta(url: str, payload: Dict[str, Any], timeout: int = 15) -> Dict[s
     return last_response
 
 
-def send_dm(recipient_id: str, text: str, quick_replies: Optional[List[str]] = None, delay: float = 0.9) -> Dict[str, Any]:
+def send_dm(recipient_id: str, text: str, quick_replies: Optional[List[str]] = None, delay: float = 0.85) -> Dict[str, Any]:
     if not PAGE_ACCESS_TOKEN:
         print("PAGE_ACCESS_TOKEN missing. DM not sent.")
         return {"error": "missing token"}
@@ -749,9 +796,7 @@ def send_dm(recipient_id: str, text: str, quick_replies: Optional[List[str]] = N
     final_response: Dict[str, Any] = {}
     for i, part in enumerate(parts):
         send_typing_action(recipient_id)
-        # Human-paced delay before every outgoing message.
-        sleep_time = min(2.4, max(delay, len(part) / 520))
-        time.sleep(sleep_time)
+        time.sleep(min(2.4, max(delay, len(part) / 520)))
         url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/me/messages"
         message: Dict[str, Any] = {"text": part}
         if quick_replies and i == len(parts) - 1:
@@ -809,7 +854,7 @@ def get_instagram_profile(sender_id: str) -> Dict[str, Any]:
 
 
 def is_follow_verified(sender_id: str, state: Dict[str, Any], force: bool = False) -> bool:
-    if not FOLLOW_REQUIRED:
+    if not FOLLOW_REQUIRED or FOLLOW_VERIFY_MODE == "off":
         return True
     if not force and str(state.get("follow_verified", "false")).lower() == "true":
         ts = parse_iso(state.get("follow_verified_at", ""))
@@ -842,12 +887,15 @@ def gemini_generate(prompt: str, image: Optional[Image.Image] = None, purpose: s
         print(f"No Gemini keys for {purpose}")
         return None
     last_error = None
-    generation_config = {"temperature": 0.15 if purpose == "audit" else 0.45}
+    generation_config = {"temperature": 0.12 if purpose == "audit" else 0.38}
     for model_name in models:
         for key in keys:
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel(model_name, generation_config=generation_config)
+                try:
+                    model = genai.GenerativeModel(model_name, generation_config=generation_config)
+                except TypeError:
+                    model = genai.GenerativeModel(model_name)
                 content = [prompt, image] if image is not None else prompt
                 response = model.generate_content(content)
                 text = getattr(response, "text", None)
@@ -868,8 +916,8 @@ def detect_category(text: str) -> str:
     t = normalize(text)
     priority = [
         "religious_education_content", "food_restaurant", "real_estate", "beauty_salon",
-        "clinic_healthcare", "photographer_videographer", "artist_portfolio", "knowledge_creator",
-        "motivation_quotes_page", "entertainment_meme_page", "fashion_lifestyle_creator",
+        "clinic_healthcare", "photographer_videographer", "knowledge_creator",
+        "entertainment_meme_page", "personal_brand", "content_page_general",
     ]
     for category in priority + [c for c in PROFILE_CATEGORIES if c not in priority]:
         cfg = PROFILE_CATEGORIES[category]
@@ -887,9 +935,9 @@ def direct_intent(text: str) -> Optional[str]:
         return "owner_reset"
     if t in DIRECT_COMMANDS:
         return DIRECT_COMMANDS[t]
-    if any(x in t for x in ["price", "cost", "how much", "charges", "package", "rate", "fees"]):
+    if any(x in t for x in ["price", "cost", "how much", "charges", "package", "rate", "fees", "pricing"]):
         return "price_question"
-    if any(x in t for x in ["details", "tell me more", "services", "what do you offer", "what will you do", "process"]):
+    if any(x in t for x in ["details", "tell me more", "services", "what do you offer", "what will you do", "process", "what is included"]):
         return "asks_details"
     if any(x in t for x in ["designer", "editor", "social media person", "agency already", "team already"]):
         return "already_has_designer"
@@ -955,35 +1003,237 @@ JSON schema:
     return data
 
 # ============================================================
-# AUDIT + CONVERSION PROMPTS
+# AUDIT + CONVERSION
 # ============================================================
+def build_fallback_preview_grid(state: Dict[str, Any], cfg: Dict[str, Any]) -> List[str]:
+    category = state.get("profile_category") or "default_general_profile"
+    if category == "religious_education_content":
+        return ["Daily Dua", "Quran Reminder", "Hadith Lesson", "Save This", "Ask a Question", "Reel Reminder", "Story Poll", "Collab Info", "Follow CTA"]
+    if category in {"content_page_general", "knowledge_creator", "entertainment_meme_page"}:
+        return ["Hook", "Value Post", "Series", "Save This", "Share Post", "Proof", "Story", "Collab", "Follow CTA"]
+    return [str(x)[:18] for x in cfg.get("grid", [])[:9]] or ["Intro", "Proof", "Value", "Story", "Offer", "FAQ", "Result", "Trust", "CTA"]
+
+
+def fallback_audit_from_facts(cfg: Dict[str, Any], facts: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
+    category = state.get("profile_category") or "default_general_profile"
+    profile_name = state.get("profile_name") or "This profile"
+    goal = state.get("target_location_or_audience") or "growth"
+    bio_lines = as_list(facts.get("bio_lines_visible"), [], 5)
+    highlights = as_list(facts.get("highlight_labels_visible"), cfg.get("highlights", []), 6)
+    grid = as_list(facts.get("post_cover_text_visible"), build_fallback_preview_grid(state, cfg), 9)
+    strong = as_list(facts.get("strong_parts_visible"), [], 3)
+    weak = as_list(facts.get("weak_parts_visible"), [], 4)
+
+    has_bio = bool(bio_lines)
+    has_highlights = len(highlights) >= 3
+    has_grid_text = len(grid) >= 3
+    is_creator = cfg.get("goal_type") == "creator_monetization"
+
+    identity_score = 8 if facts.get("username_visible") and "not clearly" not in str(facts.get("username_visible", "")).lower() else 6
+    bio_score = 7 if has_bio else 4
+    highlight_score = 7 if has_highlights else 4
+    post_score = 6 if has_grid_text else 4
+    trust_score = 5 if is_creator else 6
+    overall = min(100, (identity_score + bio_score + highlight_score + post_score + trust_score) * 2)
+
+    bio_summary = "; ".join(bio_lines) if has_bio else "bio text is not clearly readable"
+    highlights_summary = ", ".join(highlights) if highlights else "highlights are not clearly readable"
+    grid_summary = ", ".join(grid[:6]) if grid else "post covers are not clearly readable"
+
+    if is_creator:
+        main_gap = f"{profile_name} already has a clear content-page base, but the profile needs a stronger follow reason, repeatable series, and monetization path so attention can become value."
+        top_fix = "Keep the existing identity, then add a clear follow reason + collab/resource path in the bio and make the first 9 posts show series, proof, value, and action."
+        preview_bio = f"{profile_name} | Daily reminders, useful posts & shareable content | Follow for value â€¢ DM for collabs"
+        preview_highlights = highlights[:3] + [x for x in ["Start", "Best", "Collab", "FAQ"] if x not in highlights]
+        preview_grid = build_fallback_preview_grid(state, cfg)
+        default_gaps = [
+            "The page needs a clearer reason to follow immediately.",
+            "The content should be grouped into repeatable series so people remember the page.",
+            "Monetization path is not clear enough yet: collabs, promos, resources, community, or traffic."
+        ]
+    else:
+        main_gap = f"{profile_name} needs a clearer first-screen path from attention to trust to action for {goal}."
+        top_fix = "Make the bio, highlights, first posts, proof, and contact path work like one landing page."
+        preview_bio = f"{profile_name} | Clear value, proof, and action path for {goal}."
+        preview_highlights = highlights[:3] + [x for x in cfg.get("highlights", []) if x not in highlights]
+        preview_grid = build_fallback_preview_grid(state, cfg)
+        default_gaps = [
+            "The next action is not strong enough from the first screen.",
+            "Proof should be easier to notice before someone scrolls.",
+            "The first 9 posts should guide visitors through value, proof, trust, and action."
+        ]
+
+    return {
+        "overall_score": overall,
+        "audit_confidence": float(facts.get("screenshot_confidence", 0.55) or 0.55),
+        "visible_facts": {
+            "username": facts.get("username_visible", "not clearly visible"),
+            "bio_summary": bio_summary,
+            "highlights_summary": highlights_summary,
+            "grid_summary": grid_summary,
+        },
+        "specific_strengths": strong or (["The bio/profile information is already visible." if has_bio else "The profile has a visible base to build from.", "Highlights and post grid are present, so the page is not empty." if has_highlights or has_grid_text else "The profile can be improved once the first screen is clearer."]),
+        "priority_gaps": weak or default_gaps,
+        "main_gap": main_gap,
+        "profile_identity_score": identity_score,
+        "bio_cta_score": bio_score,
+        "highlights_score": highlight_score,
+        "posts_reels_score": post_score,
+        "trust_conversion_score": trust_score,
+        "profile_identity": {
+            "noticed": f"Visible identity: {facts.get('username_visible', profile_name)}. The profile name is present, so identity is not the main problem.",
+            "fix": "Sharpen the name line so a new visitor instantly knows what the page gives and why to follow or message."
+        },
+        "bio_cta": {
+            "noticed": f"Bio seen: {bio_summary[:220]}." if has_bio else "The bio text is not clearly readable in the screenshot.",
+            "fix": "Keep the useful bio parts, then add one clear action line: Follow for daily value, DM for collabs/resources, or tap the link for the next step."
+        },
+        "highlights": {
+            "noticed": f"Visible highlights: {highlights_summary}.",
+            "fix": "Order highlights like a decision path: Start Here, Best Posts, Proof/Reviews, Topics, FAQ, Contact/Collab."
+        },
+        "posts_reels": {
+            "noticed": f"Visible post direction: {grid_summary}.",
+            "fix": "Turn the first 9 posts into a mini landing page: hook, value, proof, series, story, FAQ, result, collab/action, follow CTA."
+        },
+        "trust_conversion": {
+            "noticed": "The profile has content, but the trust/action path needs to be more obvious from the first screen.",
+            "fix": "Add proof posts, pinned explanation posts, and a clear path for collabs, enquiries, resources, sales, bookings, or followers depending on the goal."
+        },
+        "top_fix": top_fix,
+        "preview_bio": preview_bio,
+        "preview_highlights": preview_highlights[:6],
+        "preview_grid": preview_grid[:9],
+        "recommended_preview_style": cfg.get("style"),
+        "raw_extracted_facts": facts,
+    }
+
+
+def normalize_audit_data(data: Dict[str, Any], cfg: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
+    raw_facts = data.get("raw_extracted_facts") if isinstance(data.get("raw_extracted_facts"), dict) else {}
+    facts = data.get("visible_facts") if isinstance(data.get("visible_facts"), dict) else {}
+
+    for key in ["profile_identity", "bio_cta", "highlights", "posts_reels", "trust_conversion"]:
+        if not isinstance(data.get(key), dict):
+            data[key] = {"noticed": "Not enough detail was visible.", "fix": "Improve this section with clearer proof and action."}
+        for sub in ["noticed", "fix"]:
+            data[key][sub] = str(data[key].get(sub, "")).strip()[:430]
+
+    for key in ["profile_identity_score", "bio_cta_score", "highlights_score", "posts_reels_score", "trust_conversion_score"]:
+        try:
+            data[key] = max(0, min(10, int(float(data.get(key, 0)))))
+        except Exception:
+            data[key] = 5
+
+    try:
+        score = int(float(data.get("overall_score", 0)))
+    except Exception:
+        score = sum(int(data.get(k, 0)) for k in ["profile_identity_score", "bio_cta_score", "highlights_score", "posts_reels_score", "trust_conversion_score"])
+        score = min(100, score * 2)
+    data["overall_score"] = max(0, min(100, score))
+
+    try:
+        data["audit_confidence"] = max(0.0, min(1.0, float(data.get("audit_confidence", raw_facts.get("screenshot_confidence", 0.65) or 0.65))))
+    except Exception:
+        data["audit_confidence"] = 0.65
+
+    if not facts:
+        facts = {
+            "username": raw_facts.get("username_visible", "not clearly visible"),
+            "bio_summary": "; ".join(as_list(raw_facts.get("bio_lines_visible"), [], 5)) or "not clearly visible",
+            "highlights_summary": ", ".join(as_list(raw_facts.get("highlight_labels_visible"), [], 6)) or "not clearly visible",
+            "grid_summary": ", ".join(as_list(raw_facts.get("post_cover_text_visible"), [], 9)) or "not clearly visible",
+        }
+    data["visible_facts"] = facts
+
+    data["specific_strengths"] = as_list(data.get("specific_strengths"), as_list(raw_facts.get("strong_parts_visible"), ["The profile already has visible information to build from."], 2), 3)
+    data["priority_gaps"] = as_list(data.get("priority_gaps"), as_list(raw_facts.get("weak_parts_visible"), ["The first screen needs a clearer path from attention to trust to action."], 3), 4)
+
+    data["main_gap"] = str(data.get("main_gap") or "The first screen needs a clearer path from attention to trust to action.").strip()[:430]
+    data["top_fix"] = str(data.get("top_fix") or "Make the bio, highlights, first posts, proof, and action path work together.").strip()[:430]
+    data["recommended_preview_style"] = data.get("recommended_preview_style") or cfg.get("style")
+    data["preview_bio"] = str(data.get("preview_bio") or build_preview_bio_from_audit(data, state)).strip()[:180]
+    data["preview_highlights"] = as_list(data.get("preview_highlights"), cfg.get("highlights", []), 6)
+    data["preview_grid"] = as_list(data.get("preview_grid"), build_fallback_preview_grid(state, cfg), 9)
+    return data
+
+
+def build_preview_bio_from_audit(data: Dict[str, Any], state: Dict[str, Any]) -> str:
+    name = state.get("profile_name") or "Brand"
+    if profile_is_creator_monetization(state):
+        return f"{name} | Clear value, shareable series & collab-ready page."
+    goal = state.get("target_location_or_audience") or "your audience"
+    return f"{name} | Clear value, trust proof, and action path for {goal}."
+
+
 def audit_profile(image: Image.Image, state: Dict[str, Any]) -> Dict[str, Any]:
-    category = state.get("profile_category") or detect_category(state.get("profile_type_raw", ""))
+    combined_category_text = f"{state.get('profile_name', '')} {state.get('profile_type_raw', '')} {state.get('target_location_or_audience', '')}"
+    category = state.get("profile_category") or detect_category(combined_category_text)
     cfg = PROFILE_CATEGORIES.get(category, PROFILE_CATEGORIES["default_general_profile"])
+    audit_image = prepare_audit_image(image)
+
+    facts_prompt = f"""
+You are reading one Instagram profile screenshot for a ClientBoost audit.
+Return ONLY valid JSON. No markdown. Do not guess. If text is not readable, write "not clearly visible".
+
+User-provided context:
+Profile / brand name: {state.get('profile_name')}
+Profile type / niche: {state.get('profile_type_raw')}
+Goal wanted from profile: {state.get('target_location_or_audience')}
+Internal category: {category}
+
+Extract visible evidence from the screenshot:
+{{
+  "username_visible": "exact visible username or not clearly visible",
+  "display_name_visible": "exact visible display/name or not clearly visible",
+  "profile_photo_observed": "what profile photo/logo looks like, or not clearly visible",
+  "bio_lines_visible": ["exact visible line 1", "exact visible line 2", "exact visible line 3"],
+  "visible_numbers": "posts/followers/following if visible",
+  "cta_or_link_visible": "button/link/contact/action path if visible",
+  "highlight_labels_visible": ["label 1", "label 2", "label 3"],
+  "post_cover_text_visible": ["cover text 1", "cover text 2", "cover text 3", "cover text 4"],
+  "visual_style_observed": "specific colors, mood, consistency, grid feel",
+  "strong_parts_visible": ["specific good thing visible", "specific good thing visible"],
+  "weak_parts_visible": ["specific weak thing visible", "specific weak thing visible"],
+  "screenshot_confidence": 0.0
+}}
+""".strip()
+
+    facts_text = gemini_generate(facts_prompt, image=audit_image, purpose="audit")
+    print("AUDIT_FACTS_RAW:", (facts_text or "")[:1000])
+    facts = extract_json(facts_text or "", {})
+    if not isinstance(facts, dict):
+        facts = {}
+
+    if not facts_text or not facts_have_useful_detail(facts):
+        return {
+            "audit_error": "vision_failed",
+            "user_message": "I could not read enough visible details from that screenshot ðŸ˜•\n\nPlease send a clearer full profile screenshot showing the username, bio, highlights, followers area, and first posts."
+        }
 
     prompt = f"""
 You are a senior Instagram growth strategist for ClientBoost.
-Audit this Instagram profile screenshot like a world-class agency strategist.
-Be specific to what is visible in the screenshot.
+Audit the screenshot using ONLY the visible evidence + user context. Return ONLY valid JSON.
 
-User details:
+CRITICAL RULES:
+- Be specific. Mention visible bio/highlights/post-cover evidence when readable.
+- If the bio is already clear, mark it as a strength. Do NOT say the bio is unclear just because you need a gap.
+- If it is a content page, do not force sales/bookings. Think followers, saves, shares, collabs, paid promos, resources, traffic, community, and trust.
+- Do NOT use template wording like "needs clearer structure" unless you prove it with screenshot evidence.
+- Every fix must be practical and specific to this profile/niche.
+- No fake guarantees. No markdown. No long paragraphs. Simple English.
+
+User context:
 Profile / Brand name: {state.get('profile_name')}
 Profile type / niche: {state.get('profile_type_raw')}
+Goal wanted from profile: {state.get('target_location_or_audience')}
 Internal category: {category}
-User goal / target: {state.get('target_location_or_audience')}
 Likely conversion angle: {cfg.get('angle')}
 
-Important:
-Return ONLY valid JSON.
-No markdown.
-No long paragraphs.
-No fake guarantees.
-No generic advice.
-No backend words.
-No mention of AI.
-Use simple English.
+Screenshot facts extracted:
+{json.dumps(facts, ensure_ascii=False)}
 
-Use this 100-point scoring system:
+Score honestly using 100 points:
 1. Name + Username clarity /10
 2. Profile photo /10
 3. Bio positioning /10
@@ -998,104 +1248,57 @@ Use this 100-point scoring system:
 JSON schema:
 {{
   "overall_score": 0,
-  "main_gap": "one clear main growth gap based on the screenshot",
+  "audit_confidence": 0.0,
+  "visible_facts": {{
+    "username": "...",
+    "bio_summary": "...",
+    "highlights_summary": "...",
+    "grid_summary": "..."
+  }},
+  "specific_strengths": ["specific strength from screenshot", "specific strength from screenshot"],
+  "priority_gaps": ["specific gap from screenshot", "specific gap from screenshot", "specific gap from screenshot"],
+  "main_gap": "one clear growth/conversion gap, based on screenshot evidence",
   "profile_identity_score": 0,
   "bio_cta_score": 0,
   "highlights_score": 0,
   "posts_reels_score": 0,
   "trust_conversion_score": 0,
-  "profile_identity": {{
-    "noticed": "specific observation about name, username, profile photo, positioning",
-    "fix": "specific fix"
-  }},
-  "bio_cta": {{
-    "noticed": "specific observation about bio and action path",
-    "fix": "specific fix"
-  }},
-  "highlights": {{
-    "noticed": "specific observation about highlights, labels, covers, order",
-    "fix": "specific fix"
-  }},
-  "posts_reels": {{
-    "noticed": "specific observation about posts, reels, grid, covers, hooks",
-    "fix": "specific fix"
-  }},
-  "trust_conversion": {{
-    "noticed": "specific observation about trust proof, reviews, authority, CTA, contact path",
-    "fix": "specific fix"
-  }},
+  "profile_identity": {{"noticed": "specific observation", "fix": "specific fix"}},
+  "bio_cta": {{"noticed": "specific observation", "fix": "specific fix"}},
+  "highlights": {{"noticed": "specific observation", "fix": "specific fix"}},
+  "posts_reels": {{"noticed": "specific observation", "fix": "specific fix"}},
+  "trust_conversion": {{"noticed": "specific observation", "fix": "specific fix"}},
   "top_fix": "one priority fix that should be done first",
+  "preview_bio": "rewritten profile bio direction specific to this profile",
+  "preview_highlights": ["highlight label 1", "highlight label 2", "highlight label 3", "highlight label 4", "highlight label 5", "highlight label 6"],
+  "preview_grid": ["specific post tile 1", "specific post tile 2", "specific post tile 3", "specific post tile 4", "specific post tile 5", "specific post tile 6", "specific post tile 7", "specific post tile 8", "specific post tile 9"],
   "recommended_preview_style": "{cfg.get('style')}"
 }}
-
-Tone:
-Premium, direct, human, expert.
-Use screenshot evidence.
-If something is not visible, say it is not clearly visible.
-Keep every noticed/fix short.
 """.strip()
 
-    text = gemini_generate(prompt, image=image, purpose="audit")
+    text = gemini_generate(prompt, image=audit_image, purpose="audit")
+    print("AUDIT_JSON_RAW:", (text or "")[:1400])
     data = extract_json(text or "", {})
-    if not data:
-        data = fallback_audit(cfg)
-    return normalize_audit_data(data, cfg)
+    if not isinstance(data, dict) or not data:
+        data = fallback_audit_from_facts(cfg, facts, state)
+    data["raw_extracted_facts"] = facts
+    data = normalize_audit_data(data, cfg, state)
 
+    if is_generic_audit(data):
+        retry_prompt = prompt + """
 
-def fallback_audit(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "overall_score": 50,
-        "main_gap": "The profile needs clearer structure so visitors understand, trust, and act faster.",
-        "profile_identity_score": 5,
-        "bio_cta_score": 5,
-        "highlights_score": 5,
-        "posts_reels_score": 5,
-        "trust_conversion_score": 5,
-        "profile_identity": {
-            "noticed": "The profile identity is not clear enough from the visible screenshot.",
-            "fix": "Make the name, profile photo, and first bio line more direct."
-        },
-        "bio_cta": {
-            "noticed": "The bio and action path need more clarity.",
-            "fix": "Add a clear value line and one direct action."
-        },
-        "highlights": {
-            "noticed": "The highlight structure needs improvement.",
-            "fix": "Use simple labels and clean covers based on the profile type."
-        },
-        "posts_reels": {
-            "noticed": "The grid needs stronger content pillars.",
-            "fix": "Create repeatable posts for value, proof, story, and action."
-        },
-        "trust_conversion": {
-            "noticed": "Trust and conversion signals are not strong enough.",
-            "fix": "Add proof, stronger CTA, and a clearer contact route."
-        },
-        "top_fix": "Rebuild the bio, highlights, and first 9-post structure.",
-        "recommended_preview_style": cfg.get("style"),
-    }
-
-
-def normalize_audit_data(data: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
-    for key in ["profile_identity", "bio_cta", "highlights", "posts_reels", "trust_conversion"]:
-        if not isinstance(data.get(key), dict):
-            data[key] = {"noticed": "Not clearly visible.", "fix": "Make this section clearer."}
-        for sub in ["noticed", "fix"]:
-            data[key][sub] = str(data[key].get(sub, "")).strip()[:360]
-    for key in ["profile_identity_score", "bio_cta_score", "highlights_score", "posts_reels_score", "trust_conversion_score"]:
-        try:
-            data[key] = max(0, min(10, int(float(data.get(key, 0)))))
-        except Exception:
-            data[key] = 5
-    try:
-        score = int(float(data.get("overall_score", 0)))
-    except Exception:
-        score = sum(int(data.get(k, 0)) for k in ["profile_identity_score", "bio_cta_score", "highlights_score", "posts_reels_score", "trust_conversion_score"])
-        score = min(100, score * 2)
-    data["overall_score"] = max(0, min(100, score))
-    data["main_gap"] = str(data.get("main_gap") or "The profile needs stronger structure.").strip()[:360]
-    data["top_fix"] = str(data.get("top_fix") or "Rebuild the bio, highlights, and content structure.").strip()[:360]
-    data["recommended_preview_style"] = data.get("recommended_preview_style") or cfg.get("style")
+Your previous output was too generic. Redo it.
+Mention at least 4 exact visible details from the screenshot facts.
+If a section is already good, mark it as a strength and suggest an upgrade, not a fake problem.
+"""
+        retry_text = gemini_generate(retry_prompt, image=audit_image, purpose="audit")
+        retry_data = extract_json(retry_text or "", {})
+        if isinstance(retry_data, dict) and retry_data:
+            retry_data["raw_extracted_facts"] = facts
+            data = normalize_audit_data(retry_data, cfg, state)
+        if is_generic_audit(data):
+            data = fallback_audit_from_facts(cfg, facts, state)
+            data = normalize_audit_data(data, cfg, state)
     return data
 
 
@@ -1104,40 +1307,51 @@ def build_audit_messages(data: Dict[str, Any], state: Dict[str, Any]) -> List[st
     profile_type = state.get("profile_type_raw") or "Instagram profile"
     goal = state.get("target_location_or_audience") or "growth"
     score = str(data.get("overall_score", "0"))
-    main_gap = data.get("main_gap") or "The profile needs stronger structure."
+    confidence = float(data.get("audit_confidence", 0.0) or 0.0)
+    facts = data.get("visible_facts", {}) if isinstance(data.get("visible_facts"), dict) else {}
+    strengths = as_list(data.get("specific_strengths"), [], 3)
+    gaps = as_list(data.get("priority_gaps"), [], 4)
 
     messages = [
         (
-            f"📍 CLIENTBOOST AUDIT\n\n"
+            f"ðŸ“ CLIENTBOOST AUDIT\n\n"
             f"Profile: {profile_name}\n"
             f"Type: {profile_type}\n"
             f"Goal: {goal}\n\n"
-            f"⭐ Overall Rating: {score}/100\n\n"
-            f"Main gap:\n{main_gap}"
+            f"â­ Rating: {score}/100\n"
+            f"ðŸ” Screenshot confidence: {int(confidence * 100)}%\n\n"
+            f"Visible evidence I used:\n"
+            f"â€¢ Bio: {facts.get('bio_summary', 'not clearly visible')}\n"
+            f"â€¢ Highlights: {facts.get('highlights_summary', 'not clearly visible')}\n"
+            f"â€¢ Grid: {facts.get('grid_summary', 'not clearly visible')}"
         )
     ]
 
-    sections = [
-        ("👤", "PROFILE IDENTITY", "profile_identity", "profile_identity_score"),
-        ("✍️", "BIO + CTA", "bio_cta", "bio_cta_score"),
-        ("⭕", "HIGHLIGHTS", "highlights", "highlights_score"),
-        ("🎬", "POSTS + REELS", "posts_reels", "posts_reels_score"),
-        ("🤝", "TRUST + CONVERSION", "trust_conversion", "trust_conversion_score"),
-    ]
+    if strengths:
+        messages.append("ðŸŸ¢ WHAT IS ALREADY GOOD\n\n" + "\n".join([f"â€¢ {x}" for x in strengths]))
+    if gaps:
+        messages.append("ðŸŸ¡ PRIORITY GAPS\n\n" + "\n".join([f"â€¢ {x}" for x in gaps]))
 
+    sections = [
+        ("ðŸ‘¤", "PROFILE IDENTITY", "profile_identity", "profile_identity_score"),
+        ("âœï¸", "BIO + ACTION PATH", "bio_cta", "bio_cta_score"),
+        ("â­•", "HIGHLIGHTS", "highlights", "highlights_score"),
+        ("ðŸŽ¬", "POSTS + REELS", "posts_reels", "posts_reels_score"),
+        ("ðŸ¤", "TRUST + CONVERSION", "trust_conversion", "trust_conversion_score"),
+    ]
     for emoji, title, key, score_key in sections:
         sec = data.get(key, {})
         messages.append(
             f"{emoji} {title}\n\n"
             f"Score: {data.get(score_key, 0)}/10\n\n"
-            f"I noticed:\n{sec.get('noticed', '')}\n\n"
-            f"Fix:\n{sec.get('fix', '')}"
+            f"Seen:\nâ€¢ {sec.get('noticed', '')}\n\n"
+            f"Fix:\nâ€¢ {sec.get('fix', '')}"
         )
 
     messages.append(
-        f"⚡ FIRST FIX\n\n"
-        f"Start here:\n{data.get('top_fix', '')}\n\n"
-        f"This will make the profile easier to understand, trust, and act on."
+        f"âš¡ FIRST FIX\n\n"
+        f"Start here:\nâ€¢ {data.get('top_fix', '')}\n\n"
+        f"This is the fastest way to make the profile feel clearer, more trusted, and easier to act on."
     )
 
     final_messages: List[str] = []
@@ -1151,17 +1365,17 @@ def build_audit_messages(data: Dict[str, Any], state: Dict[str, Any]) -> List[st
 
 def build_ai_conversion_message(state: Dict[str, Any], user_text: str, stage: str) -> str:
     cfg = PROFILE_CATEGORIES.get(state.get("profile_category") or "default_general_profile", PROFILE_CATEGORIES["default_general_profile"])
+    strengths = state_json_list(state, "specific_strengths_json", [], 3)
+    gaps = state_json_list(state, "priority_gaps_json", [], 4)
+    monetization_note = "This is a content/page profile, so avoid forcing sales/bookings. Think followers, saves, shares, collabs, paid promos, resources, traffic, community, and trust." if profile_is_creator_monetization(state) else ""
     prompt = f"""
 You are a senior ClientBoost strategist speaking in Instagram DM.
-Write ONE short message only.
-No paragraphs longer than 2 short lines.
-Do not ask for contact unless the stage is ask_contact.
+Write ONE short message only. Simple English. No paragraph longer than 2 short lines.
+Use the screenshot-specific audit, not generic marketing advice.
+Use 1-2 natural emojis. End with one clear question.
 Do not mention bot, AI, backend, automation, quota, cooldown, or handover.
-Do not use fake guarantees, fake urgency, or fake scarcity.
-Use the exact audit gap and profile type.
-Keep under 520 characters.
-Use 1-2 natural emojis.
-End with one clear question.
+Do not ask for contact unless stage is ask_contact.
+{monetization_note}
 
 Stage: {stage}
 User message: {user_text}
@@ -1174,17 +1388,21 @@ Category: {state.get('profile_category')}
 Audit score: {state.get('audit_score')}/100
 Main gap: {state.get('main_gap')}
 Top fix: {state.get('top_fix')}
-Preview direction: {', '.join(cfg.get('grid', []))}
+Specific strengths: {strengths}
+Specific gaps: {gaps}
+Preview bio: {state.get('preview_bio')}
+Preview highlights: {state_json_list(state, 'preview_highlights_json', cfg.get('highlights', []), 6)}
+Preview grid: {state_json_list(state, 'preview_grid_json', cfg.get('grid', []), 9)}
 
-Stage meanings:
-pain = make the user feel understood and aware of the hidden cost.
-reframe = explain why random posting is not the real fix.
-solution = show the first fix and ask if they want fit checked.
-goal = ask what result matters most.
+Stage meaning:
+pain = acknowledge what is already good, then point to the real hidden gap.
+reframe = explain why more posts alone will not fix this profile.
+solution = show the exact first fix.
+goal = ask what result or monetization path matters most.
 timeline = ask how soon they want it improved.
-scope = ask profile fix first or full growth system.
-ask_contact = ask best contact detail, WhatsApp or email, for senior strategist review.
-objection = answer the objection, then ask the next logical question.
+scope = ask profile fix first, content direction, or full growth system. If user is unsure, give simple options.
+ask_contact = ask best contact detail, WhatsApp or email, and mention senior review can suggest the right starting plan.
+objection = answer briefly, then ask the next logical question.
 """.strip()
     text = gemini_generate(prompt, purpose="conversion")
     if text:
@@ -1193,60 +1411,84 @@ objection = answer the objection, then ask the next logical question.
 
 
 def deterministic_conversion_message(state: Dict[str, Any], stage: str, user_text: str = "") -> str:
-    main_gap = state.get("main_gap") or "the profile is not clear enough for visitors to trust and act"
-    top_fix = state.get("top_fix") or "rebuild the bio, highlights, content pillars, and CTA"
+    main_gap = state.get("main_gap") or "the first screen is not turning attention into trust and action clearly enough"
+    top_fix = state.get("top_fix") or "make the bio, highlights, first 9 posts, proof, and action path work together"
+    strengths = state_json_list(state, "specific_strengths_json", [], 2)
+    gaps = state_json_list(state, "priority_gaps_json", [main_gap], 2)
+    strength_line = strengths[0] if strengths else "Your profile already has a base to build from."
+    gap_line = gaps[0] if gaps else main_gap
+    creator = profile_is_creator_monetization(state)
+
     if stage == "pain":
         return (
-            "I see the real issue now 👀\n\n"
-            f"It is not just posting more. The main gap is: {main_gap}\n\n"
-            "That is where profiles silently lose followers, enquiries, or trust.\n\n"
-            "Want me to show the fix?"
+            "I checked it properly ðŸ‘€\n\n"
+            f"Good part: {strength_line}\n\n"
+            f"Real gap: {gap_line}\n\n"
+            "Want me to show the exact fix direction?"
         )
     if stage == "reframe":
+        if creator:
+            return (
+                "Exactly âœ…\n\n"
+                "For a page, the fix is not only posting more.\n\n"
+                "The page needs a clear follow reason, repeatable series, proof, and a monetization path.\n\n"
+                "Should I show what ClientBoost would fix first?"
+            )
         return (
-            "Exactly ✅\n\n"
-            "More posts will not help if the profile foundation is weak.\n\n"
-            "First we fix the bio, highlights, proof, content direction, and action path.\n\n"
+            "Exactly âœ…\n\n"
+            "Posting more is not the first fix here.\n\n"
+            "The first screen has to make people understand, trust, and know what to do next.\n\n"
             "Should I show what ClientBoost would fix first?"
         )
     if stage == "solution":
         return (
-            "Here is the first move ⚡\n\n"
-            f"{top_fix}\n\n"
-            "Then content becomes easier to plan because every post has a purpose.\n\n"
+            "Here is the first move âš¡\n\n"
+            f"â€¢ {top_fix}\n\n"
+            "After that, every post has a job: proof, value, trust, or action.\n\n"
             "Want me to check what support fits you?"
         )
     if stage == "goal":
+        if creator:
+            return (
+                "Good ðŸŽ¯\n\n"
+                "For this page, what result matters most?\n\n"
+                "Followers / Saves / Shares / Paid promos / Brand collabs / Digital product / Community / Traffic"
+            )
         return (
-            "Good. What matters most right now? 🎯\n\n"
-            "Reply with one:\n"
-            "Followers / Enquiries / Sales / Bookings / Trust / Brand deals"
+            "Good ðŸŽ¯\n\n"
+            "What matters most right now?\n\n"
+            "Followers / Enquiries / Sales / Bookings / Trust / Clients / Brand deals"
         )
     if stage == "timeline":
         return (
-            "Got it ✅\n\n"
-            "How soon do you want to improve this?\n\n"
+            "Got it âœ…\n\n"
+            "How soon do you want this improved?\n\n"
             "Reply: immediately, this week, this month, or just exploring."
         )
     if stage == "scope":
         return (
-            "That helps ✅\n\n"
-            "Do you want only the profile structure fixed first, or do you want ClientBoost to handle the full growth system too?"
+            "That helps âœ…\n\n"
+            "Choose one starting point:\n"
+            "1. Profile fix\n"
+            "2. Content direction\n"
+            "3. Full growth system\n"
+            "4. Not sure"
         )
     if stage == "ask_contact":
+        unclear = normalize(user_text) in UNCERTAIN_WORDS or normalize(user_text) in {"4", "not sure"}
+        prefix = "No problem â€” a senior strategist can suggest the right starting plan after reviewing it properly âœ…" if unclear else "Perfect âœ…"
         return (
-            "Perfect ✅\n\n"
-            "This is worth reviewing properly with a senior ClientBoost strategist.\n\n"
-            "Send your best contact detail — WhatsApp number or email."
+            f"{prefix}\n\n"
+            "Send your best contact detail â€” WhatsApp number or email."
         )
     return (
-        f"Fair point ✅\n\nThe main gap is: {main_gap}\n\n"
-        "Before suggesting anything, I need to know your goal.\n\n"
-        "What matters most: followers, enquiries, sales, trust, or brand deals?"
+        "Fair point âœ…\n\n"
+        f"The main issue is: {main_gap}\n\n"
+        "Before suggesting anything, what result matters most to you?"
     )
 
 # ============================================================
-# PREVIEW IMAGE GENERATOR — Instagram profile style mockup
+# PREVIEW IMAGE GENERATOR
 # ============================================================
 def load_font(size: int, bold: bool = False):
     candidates = [
@@ -1300,19 +1542,13 @@ def style_palette(style: str) -> Dict[str, Tuple[int, int, int]]:
 
 
 def build_bio_direction(state: Dict[str, Any], cfg: Dict[str, Any]) -> str:
+    bio = (state.get("preview_bio") or "").strip()
+    if bio:
+        return bio[:170]
     name = state.get("profile_name") or "Brand"
+    if profile_is_creator_monetization(state):
+        return f"{name} | Clear value, shareable series & collab-ready page."
     goal = state.get("target_location_or_audience") or "your audience"
-    category = state.get("profile_category") or "default_general_profile"
-    if category == "food_restaurant":
-        return f"{name} | Fresh food, clear menu, trust proof, and easy order path."
-    if category == "real_estate":
-        return f"{name} | Property guidance, listings, documents, visits, and clear contact."
-    if category == "religious_education_content":
-        return f"{name} | Daily reminders, duas, lessons, and shareable Islamic content."
-    if category in ["influencer_creator", "personal_brand", "fashion_lifestyle_creator"]:
-        return f"{name} | Clear niche, stronger hooks, collab-ready profile, and memorable content."
-    if category == "clinic_healthcare":
-        return f"{name} | Clear care, treatments, trust proof, and simple booking path."
     return f"{name} | Clear positioning for {goal}. Better proof, content pillars, and action path."
 
 
@@ -1321,9 +1557,12 @@ def grid_subtitle(label: str) -> str:
         "CTA": "Action", "Book": "Action", "Order": "Action", "Follow": "Action", "Contact": "Lead",
         "Review": "Trust", "Proof": "Trust", "Trust": "Trust", "Story": "Human", "Tip": "Value",
         "Insight": "Value", "Hook": "Reach", "Reel": "Reach", "Offer": "Sales", "Food": "Craving",
-        "Reminder": "Save", "Hadith": "Value", "Dua": "Share", "Quote": "Share",
+        "Reminder": "Save", "Hadith": "Value", "Dua": "Share", "Quran": "Save", "Collab": "Money", "Promo": "Money",
     }
-    return mapping.get(label, "Content")
+    for key, val in mapping.items():
+        if key.lower() in str(label).lower():
+            return val
+    return "Content"
 
 
 def generate_preview_image(state: Dict[str, Any]) -> str:
@@ -1342,7 +1581,6 @@ def generate_preview_image(state: Dict[str, Any]) -> str:
     font_sm = load_font(19, False)
     font_xs = load_font(16, False)
 
-    # Phone/screen card
     sx, sy = 70, 54
     sw, sh = 940, 1190
     rounded_rect(draw, (sx, sy, sx + sw, sy + sh), 48, pal["screen"])
@@ -1353,14 +1591,16 @@ def generate_preview_image(state: Dict[str, Any]) -> str:
     soft = pal["soft"]
     accent_text = (255, 255, 255)
 
-    # Top bar — always prioritize profile name given by user, not sender username.
-    y = sy + 38
     profile_name = (state.get("profile_name") or "Your Profile").strip()[:36]
-    username_display = safe_username(state.get("profile_name") or "yourprofile")
-    draw.text((sx + 44, y), username_display, font=font_lg, fill=text)
-    draw.text((sx + sw - 100, y + 2), "☰", font=font_lg, fill=text)
+    username_display = safe_username(profile_name)
+    highlights = state_json_list(state, "preview_highlights_json", cfg.get("highlights", []), 6)
+    grid_labels = state_json_list(state, "preview_grid_json", build_fallback_preview_grid(state, cfg), 9)
+    strengths = state_json_list(state, "specific_strengths_json", [], 2)
 
-    # Profile block
+    y = sy + 38
+    draw.text((sx + 44, y), username_display, font=font_lg, fill=text)
+    draw.text((sx + sw - 100, y + 2), "â˜°", font=font_lg, fill=text)
+
     y += 78
     cx, cy = sx + 104, y + 62
     draw.ellipse((cx - 58, cy - 58, cx + 58, cy + 58), fill=soft, outline=accent, width=5)
@@ -1369,7 +1609,7 @@ def generate_preview_image(state: Dict[str, Any]) -> str:
     draw.text((cx - iw / 2, cy - 18), initials, font=font_md, fill=accent)
 
     stats_x = sx + 230
-    stat_items = [("9", "Posts"), ("6", "Highlights"), ("3", "Pillars")]
+    stat_items = [("Bio", "Specific"), (str(len(highlights)), "Highlights"), ("9", "Post plan")]
     gap = 200
     for i, (top, bottom) in enumerate(stat_items):
         px = stats_x + i * gap
@@ -1383,24 +1623,23 @@ def generate_preview_image(state: Dict[str, Any]) -> str:
     y += 38
     bio = build_bio_direction(state, cfg)
     y = draw_wrapped(draw, bio, (sx + 44, y), font_body, text, sw - 88, max_lines=3)
-    y += 12
-    cta_line = "Clear profile → stronger trust → better action"
+    y += 8
+    cta_line = "Clear value â†’ proof â†’ action"
+    if strengths:
+        cta_line = ("Upgrade: " + strengths[0])[:58]
     draw.text((sx + 44, y), cta_line, font=font_sm, fill=accent)
     y += 50
 
-    # Action buttons
     btn_w = (sw - 110) // 3
-    for i, label in enumerate(["Bio", "Highlights", "Content"]):
+    for i, label in enumerate(["Bio", "Proof", "Action"]):
         bx = sx + 44 + i * (btn_w + 11)
         rounded_rect(draw, (bx, y, bx + btn_w, y + 44), 12, soft)
         lw = text_width(draw, label, font_sm)
         draw.text((bx + btn_w / 2 - lw / 2, y + 11), label, font=font_sm, fill=text)
     y += 76
 
-    # Highlights
-    highlights = cfg.get("highlights", [])[:6]
-    spacing = (sw - 88) // 6
-    for i, h in enumerate(highlights):
+    spacing = (sw - 88) // max(1, len(highlights[:6]))
+    for i, h in enumerate(highlights[:6]):
         hx = sx + 44 + i * spacing + spacing // 2
         draw.ellipse((hx - 37, y, hx + 37, y + 74), fill=pal["screen"], outline=accent, width=3)
         icon = h[:1].upper()
@@ -1411,21 +1650,18 @@ def generate_preview_image(state: Dict[str, Any]) -> str:
         draw.text((hx - lw / 2, y + 86), label, font=font_xs, fill=muted)
     y += 130
 
-    # Tabs
     draw.line((sx + 44, y, sx + sw - 44, y), fill=soft, width=2)
     y += 22
-    tabs = ["▦", "▶", "☷"]
+    tabs = ["â–¦", "â–¶", "â˜·"]
     for i, t in enumerate(tabs):
         tx = sx + sw * (i + 0.5) / 3
         tw = text_width(draw, t, font_md)
         draw.text((tx - tw / 2, y), t, font=font_md, fill=accent if i == 0 else muted)
     y += 54
 
-    # Grid
-    grid_labels = cfg.get("grid", [])[:9]
     tile_gap = 6
     tile_size = (sw - 88 - 2 * tile_gap) // 3
-    for idx, label in enumerate(grid_labels):
+    for idx, label in enumerate(grid_labels[:9]):
         row, col = divmod(idx, 3)
         x = sx + 44 + col * (tile_size + tile_gap)
         yy = y + row * (tile_size + tile_gap)
@@ -1439,14 +1675,19 @@ def generate_preview_image(state: Dict[str, Any]) -> str:
             fill = soft if idx in [2, 4, 6] else pal["screen"]
         draw.rectangle((x, yy, x + tile_size, yy + tile_size), fill=fill, outline=pal["bg"], width=2)
         draw.rectangle((x, yy, x + tile_size, yy + 56), fill=accent)
-        label_short = label[:13]
-        lw = text_width(draw, label_short, font_md)
-        draw.text((x + tile_size / 2 - lw / 2, yy + tile_size / 2 - 22), label_short, font=font_md, fill=accent_text)
-        sub = grid_subtitle(label)
+        draw.text((x + 16, yy + 16), grid_subtitle(str(label)).upper()[:10], font=font_xs, fill=accent_text)
+        label_short = str(label)[:22]
+        label_lines = textwrap.wrap(label_short, width=12)[:2]
+        ly = yy + tile_size / 2 - (len(label_lines) * 18)
+        for line in label_lines:
+            lw = text_width(draw, line, font_sm)
+            draw.text((x + tile_size / 2 - lw / 2, ly), line, font=font_sm, fill=text)
+            ly += 27
+        sub = grid_subtitle(str(label))
         sw2 = text_width(draw, sub, font_xs)
-        draw.text((x + tile_size / 2 - sw2 / 2, yy + tile_size / 2 + 20), sub, font=font_xs, fill=muted)
+        draw.text((x + tile_size / 2 - sw2 / 2, yy + tile_size / 2 + 38), sub, font=font_xs, fill=muted)
 
-    footer = "ClientBoost profile direction — built from your audit"
+    footer = "ClientBoost specific direction â€” built from your audit"
     fw = text_width(draw, footer, font_sm)
     footer_fill = (80, 80, 80) if pal["bg"] != (20, 23, 30) else (210, 210, 210)
     draw.text((W / 2 - fw / 2, H - 58), footer, font=font_sm, fill=footer_fill)
@@ -1461,14 +1702,14 @@ def generate_preview_image(state: Dict[str, Any]) -> str:
 # ============================================================
 def msg_follow_gate() -> str:
     return (
-        f"👋 To unlock your free audit, follow @{FOLLOW_ACCOUNT_USERNAME} first.\n\n"
+        f"ðŸ‘‹ To unlock your free audit, follow @{FOLLOW_ACCOUNT_USERNAME} first.\n\n"
         "After that, tap I FOLLOWED."
     )
 
 
 def msg_why_follow() -> str:
     return (
-        "✅ The audit is free, but it takes real review time.\n\n"
+        "âœ… The audit is free, but it takes real review time.\n\n"
         "Following ClientBoost helps us keep the free audit available for more people.\n\n"
         f"Follow @{FOLLOW_ACCOUNT_USERNAME}, then tap I FOLLOWED."
     )
@@ -1476,57 +1717,57 @@ def msg_why_follow() -> str:
 
 def msg_start_audit() -> str:
     return (
-        "Great 👋\n\n"
-        "I’ll check your Instagram profile like a growth strategist.\n\n"
+        "Great ðŸ‘‹\n\n"
+        "Iâ€™ll check your Instagram profile like a growth strategist.\n\n"
         "First, what name should I use for the profile or brand?"
     )
 
 
 def msg_ask_type(profile_name: str) -> str:
     return (
-        f"Noted — {profile_name} ✅\n\n"
+        f"Noted â€” {profile_name} âœ…\n\n"
         "What is this profile about?\n\n"
-        "A simple answer is enough — restaurant, creator, clinic, shop, coach, real estate, page, etc."
+        "A simple answer is enough â€” restaurant, creator, Islamic page, clinic, shop, coach, real estate, etc."
     )
 
 
 def msg_ask_goal() -> str:
     return (
-        "Got it 🎯\n\n"
+        "Got it ðŸŽ¯\n\n"
         "What do you want this profile to bring you?\n\n"
-        "Followers, customers, bookings, sales, trust, clients, brand deals, or something else?"
+        "Followers, customers, bookings, sales, trust, clients, brand deals, paid promos, or something else?"
     )
 
 
 def msg_ask_screenshot() -> str:
     return (
-        "Perfect 📸\n\n"
-        "Now send one screenshot of the Instagram profile.\n\n"
-        "Make sure it shows bio, highlights, followers area, and first posts."
+        "Perfect ðŸ“¸\n\n"
+        "Now send one clear screenshot of the Instagram profile.\n\n"
+        "Make sure it shows the username, bio, highlights, followers area, and first posts."
     )
 
 
 def msg_after_audit() -> str:
     return (
-        "✅ Your audit is ready.\n\n"
-        "The main issue is clear now: the profile needs stronger structure before more posting.\n\n"
+        "âœ… Your audit is ready.\n\n"
+        "I used the visible bio, highlights, grid, and action path â€” not a template.\n\n"
         "What do you want to do next?"
     )
 
 
 def msg_after_preview() -> str:
     return (
-        "✅ This is the profile direction.\n\n"
-        "It shows how your bio, highlights, and first grid can look more clear and conversion-focused.\n\n"
+        "âœ… This is the profile direction.\n\n"
+        "It uses your audit facts for the bio, highlights, and first grid direction.\n\n"
         "Want ClientBoost to map the fix properly?"
     )
 
 
 def msg_senior_review() -> str:
     return (
-        "Done ✅\n\n"
+        "Done âœ…\n\n"
         "Your profile case is ready for senior ClientBoost review.\n\n"
-        "They’ll continue with your audit, preview direction, goal, and contact details already noted."
+        "Theyâ€™ll continue with your audit, preview direction, goal, and contact details already noted."
     )
 
 # ============================================================
@@ -1536,7 +1777,7 @@ def can_start_new_audit(state: Dict[str, Any]) -> Tuple[bool, str]:
     until = parse_iso(state.get("cooldown_until", ""))
     if until and until > datetime.now(timezone.utc):
         return False, (
-            "✅ I already have your recent audit here.\n\n"
+            "âœ… I already have your recent audit here.\n\n"
             "You can view it again, see the preview, or start fixing it."
         )
     return True, ""
@@ -1549,7 +1790,7 @@ def handle_start(sender_id: str, state: Dict[str, Any]):
     if not allowed and state.get("latest_audit"):
         send_dm(sender_id, reason, ["VIEW AUDIT", "SEE PREVIEW", "FIX THIS"])
         return
-    if FOLLOW_REQUIRED and not is_follow_verified(sender_id, state, force=False):
+    if FOLLOW_REQUIRED and FOLLOW_VERIFY_MODE != "off" and not is_follow_verified(sender_id, state, force=False):
         state["step"] = "follow_gate"
         STORE.save_state(sender_id, state)
         send_dm(sender_id, msg_follow_gate(), ["I FOLLOWED", "WHY FOLLOW", "CANCEL"])
@@ -1562,14 +1803,17 @@ def handle_start(sender_id: str, state: Dict[str, Any]):
 
 
 def handle_follow_confirmed(sender_id: str, state: Dict[str, Any]):
-    if is_follow_verified(sender_id, state, force=True) or FOLLOW_VERIFY_MODE != "strict":
+    verified = is_follow_verified(sender_id, state, force=True)
+    if verified or FOLLOW_VERIFY_MODE in {"soft", "off"}:
         state = clear_audit_flow_fields(state)
+        state["follow_verified"] = "true" if verified else "manual_soft"
+        state["follow_verified_at"] = now_iso()
         state["step"] = "ask_profile_name"
         STORE.save_state(sender_id, state)
         send_dm(sender_id, msg_start_audit())
     else:
         send_dm(sender_id, (
-            "I could not confirm it yet 👀\n\n"
+            "I could not confirm it yet ðŸ‘€\n\n"
             f"Please follow @{FOLLOW_ACCOUNT_USERNAME}, then tap I FOLLOWED again.\n\n"
             "Sometimes Instagram takes a few seconds to update."
         ), ["I FOLLOWED", "WHY FOLLOW", "CANCEL"])
@@ -1577,9 +1821,11 @@ def handle_follow_confirmed(sender_id: str, state: Dict[str, Any]):
 
 def handle_profile_name(sender_id: str, state: Dict[str, Any], text: str):
     if len(text.strip()) < 2:
-        send_dm(sender_id, "Please send the profile or brand name 🙂")
+        send_dm(sender_id, "Please send the profile or brand name ðŸ™‚")
         return
     state["profile_name"] = text.strip()[:80]
+    if not state.get("profile_category"):
+        state["profile_category"] = detect_category(state["profile_name"])
     state["step"] = "ask_profile_type"
     STORE.save_state(sender_id, state)
     send_dm(sender_id, msg_ask_type(state["profile_name"]))
@@ -1587,10 +1833,10 @@ def handle_profile_name(sender_id: str, state: Dict[str, Any], text: str):
 
 def handle_profile_type(sender_id: str, state: Dict[str, Any], text: str):
     if len(text.strip()) < 2:
-        send_dm(sender_id, "Please tell me what this profile is about 🙂")
+        send_dm(sender_id, "Please tell me what this profile is about ðŸ™‚")
         return
     state["profile_type_raw"] = text.strip()[:120]
-    state["profile_category"] = detect_category(text)
+    state["profile_category"] = detect_category(f"{state.get('profile_name', '')} {text}")
     state["step"] = "ask_goal_or_audience"
     STORE.save_state(sender_id, state)
     send_dm(sender_id, msg_ask_goal())
@@ -1598,16 +1844,18 @@ def handle_profile_type(sender_id: str, state: Dict[str, Any], text: str):
 
 def handle_goal_or_audience(sender_id: str, state: Dict[str, Any], text: str):
     if len(text.strip()) < 2:
-        send_dm(sender_id, "What do you want from this profile — followers, customers, bookings, sales, trust, or brand deals? 🎯")
+        send_dm(sender_id, "What do you want from this profile â€” followers, customers, bookings, sales, trust, brand deals, or money? ðŸŽ¯")
         return
     state["target_location_or_audience"] = text.strip()[:160]
+    # Re-check category using goal too; this fixes cases like name=Haqikat.e.islam, type=Page, goal=All.
+    state["profile_category"] = detect_category(f"{state.get('profile_name', '')} {state.get('profile_type_raw', '')} {text}")
     state["step"] = "ask_screenshot"
     STORE.save_state(sender_id, state)
     send_dm(sender_id, msg_ask_screenshot())
 
 
 def handle_screenshot(sender_id: str, state: Dict[str, Any], image_url: str):
-    send_dm(sender_id, "Got the screenshot 📸\n\nI’m checking the profile structure now.")
+    send_dm(sender_id, "Got the screenshot ðŸ“¸\n\nIâ€™m reading the visible bio, highlights, grid, and post covers now.")
     state["step"] = "processing_audit"
     STORE.save_state(sender_id, state)
 
@@ -1615,10 +1863,15 @@ def handle_screenshot(sender_id: str, state: Dict[str, Any], image_url: str):
     if image is None:
         state["step"] = "ask_screenshot"
         STORE.save_state(sender_id, state)
-        send_dm(sender_id, "I could not read that screenshot properly 😕\n\nPlease send a clearer Instagram profile screenshot.")
+        send_dm(sender_id, "I could not read that screenshot properly ðŸ˜•\n\nPlease send a clearer Instagram profile screenshot.")
         return
 
     data = audit_profile(image, state)
+    if data.get("audit_error"):
+        state["step"] = "ask_screenshot"
+        STORE.save_state(sender_id, state)
+        send_dm(sender_id, data.get("user_message") or "I could not read enough visible details from that screenshot ðŸ˜•\n\nPlease send a clearer full profile screenshot showing bio, highlights, and first posts.")
+        return
 
     state["audit_score"] = str(data.get("overall_score", ""))
     state["main_gap"] = str(data.get("main_gap", ""))
@@ -1630,6 +1883,16 @@ def handle_screenshot(sender_id: str, state: Dict[str, Any], image_url: str):
     state["preview_style"] = data.get("recommended_preview_style") or PROFILE_CATEGORIES.get(
         state.get("profile_category"), PROFILE_CATEGORIES["default_general_profile"]
     ).get("style")
+
+    state["visible_facts_json"] = json.dumps(data.get("visible_facts", {}), ensure_ascii=False)
+    state["raw_extracted_facts_json"] = json.dumps(data.get("raw_extracted_facts", {}), ensure_ascii=False)
+    state["specific_strengths_json"] = to_json_list(data.get("specific_strengths"), [], 3)
+    state["priority_gaps_json"] = to_json_list(data.get("priority_gaps"), [], 4)
+    state["preview_bio"] = str(data.get("preview_bio", ""))[:180]
+    cfg = PROFILE_CATEGORIES.get(state.get("profile_category"), PROFILE_CATEGORIES["default_general_profile"])
+    state["preview_highlights_json"] = to_json_list(data.get("preview_highlights"), cfg.get("highlights", []), 6)
+    state["preview_grid_json"] = to_json_list(data.get("preview_grid"), build_fallback_preview_grid(state, cfg), 9)
+    state["audit_confidence"] = str(data.get("audit_confidence", ""))
 
     # New audit means any old preview must not be reused.
     state["preview_filename"] = ""
@@ -1653,7 +1916,7 @@ def handle_screenshot(sender_id: str, state: Dict[str, Any], image_url: str):
 def handle_latest(sender_id: str, state: Dict[str, Any]):
     audit = state.get("latest_audit")
     if not audit:
-        send_dm(sender_id, "No audit is saved yet 🙂\n\nSend GROWTH to start your free audit.", ["GROWTH"])
+        send_dm(sender_id, "No audit is saved yet ðŸ™‚\n\nSend GROWTH to start your free audit.", ["GROWTH"])
         return
     if "---CB-AUDIT-SECTION---" in audit:
         audit_parts = [p.strip() for p in audit.split("---CB-AUDIT-SECTION---") if p.strip()]
@@ -1663,7 +1926,7 @@ def handle_latest(sender_id: str, state: Dict[str, Any]):
         for msg in split_text(part, MAX_DM_CHARS):
             send_dm(sender_id, msg)
             time.sleep(0.7)
-    send_dm(sender_id, "✅ That’s the audit again.\n\nWhat would you like next?", ["SEE PREVIEW", "FIX THIS"])
+    send_dm(sender_id, "âœ… Thatâ€™s the audit again.\n\nWhat would you like next?", ["SEE PREVIEW", "FIX THIS"])
 
 
 def preview_file_exists(filename: str) -> bool:
@@ -1672,33 +1935,29 @@ def preview_file_exists(filename: str) -> bool:
 
 def handle_preview(sender_id: str, state: Dict[str, Any]):
     if not state.get("latest_audit"):
-        send_dm(
-            sender_id,
-            "The preview comes after the audit 🙂\n\nSend GROWTH first, then I’ll ask 3 easy questions and review the profile properly.",
-            ["GROWTH"]
-        )
+        send_dm(sender_id, "The preview comes after the audit ðŸ™‚\n\nSend GROWTH first, then Iâ€™ll ask 3 easy questions and review the profile properly.", ["GROWTH"])
         state["step"] = "new"
         STORE.save_state(sender_id, state)
         return
-    if FOLLOW_REQUIRED and not is_follow_verified(sender_id, state, force=True):
+    if FOLLOW_REQUIRED and FOLLOW_VERIFY_MODE == "strict" and not is_follow_verified(sender_id, state, force=True):
         state["step"] = "follow_gate"
         STORE.save_state(sender_id, state)
-        send_dm(sender_id, f"To unlock the free preview, follow @{FOLLOW_ACCOUNT_USERNAME} first 👋\n\nOnce done, tap I FOLLOWED.", ["I FOLLOWED", "WHY FOLLOW", "CANCEL"])
+        send_dm(sender_id, f"To unlock the free preview, follow @{FOLLOW_ACCOUNT_USERNAME} first ðŸ‘‹\n\nOnce done, tap I FOLLOWED.", ["I FOLLOWED", "WHY FOLLOW", "CANCEL"])
         return
 
     filename = state.get("preview_filename", "")
-    already_generated = str(state.get("preview_generated", "false")).lower() == "true"
-    if not preview_file_exists(filename):
+    if preview_file_exists(filename):
+        send_dm(sender_id, "Here is your specific profile preview again ðŸ‘‡")
+    else:
+        already_generated = str(state.get("preview_generated", "false")).lower() == "true"
         if already_generated:
-            send_dm(sender_id, "Here is your profile preview again 👇")
+            send_dm(sender_id, "The saved preview file was cleared by the server, so Iâ€™m rebuilding the same audit-based preview once more ðŸŽ¨")
         else:
-            send_dm(sender_id, "Creating your profile preview now 🎨\n\nI’ll use the audit to show a clearer bio, highlights, and first grid direction.")
+            send_dm(sender_id, "Creating your specific profile preview now ðŸŽ¨\n\nIâ€™ll use the audit facts to show a clearer bio, highlights, and first-grid direction.")
         filename = generate_preview_image(state)
         state["preview_filename"] = filename
         if PUBLIC_BASE_URL:
             state["preview_url"] = f"{PUBLIC_BASE_URL}/preview/{filename}"
-    else:
-        send_dm(sender_id, "Here is your profile preview again 👇")
 
     state["step"] = "preview_sent"
     state["preview_requested"] = "true"
@@ -1709,20 +1968,16 @@ def handle_preview(sender_id: str, state: Dict[str, Any]):
     if PUBLIC_BASE_URL and state.get("preview_url"):
         result = send_image(sender_id, state["preview_url"])
         if result.get("error"):
-            send_dm(sender_id, "The preview is ready, but Instagram did not load the image here 😕\n\nPlease try SEE PREVIEW again in a moment.")
+            send_dm(sender_id, "The preview is ready, but Instagram did not load the image here ðŸ˜•\n\nPlease try SEE PREVIEW again in a moment.")
     else:
-        send_dm(sender_id, "The preview is ready, but I could not send the image here 😕\n\nPlease try again in a moment.")
+        send_dm(sender_id, "The preview is ready, but I could not send the image here ðŸ˜•\n\nPlease try again in a moment.")
     time.sleep(0.8)
     send_dm(sender_id, msg_after_preview(), ["FIX THIS", "VIEW AUDIT"])
 
 
 def start_conversion(sender_id: str, state: Dict[str, Any], text: str = ""):
     if not state.get("latest_audit"):
-        send_dm(
-            sender_id,
-            "I can help with that 🙂\n\nFirst I need to audit the profile so the advice is specific, not generic.\n\nSend GROWTH to start the free audit.",
-            ["GROWTH"]
-        )
+        send_dm(sender_id, "I can help with that ðŸ™‚\n\nFirst I need to audit the profile so the advice is specific, not generic.\n\nSend GROWTH to start the free audit.", ["GROWTH"])
         return
     state["lead_temperature"] = "hot"
     state["step"] = "conversion_pain"
@@ -1735,9 +1990,8 @@ def advance_conversion(sender_id: str, state: Dict[str, Any], text: str, target_
     step = state.get("step")
     norm = normalize(text)
 
-    # Save answer only when the user is actually answering a qualification question.
     if step == "conversion_goal" and norm not in YES_WORDS:
-        state["goal"] = text.strip()[:150]
+        state["goal"] = text.strip()[:180]
     elif step == "conversion_timeline" and norm not in YES_WORDS:
         state["timeline"] = text.strip()[:150]
     elif step == "conversion_scope" and norm not in YES_WORDS:
@@ -1776,35 +2030,87 @@ def advance_conversion(sender_id: str, state: Dict[str, Any], text: str, target_
     STORE.save_state(sender_id, state)
 
     msg = build_ai_conversion_message(state, text, stage)
-    # No repeated buttons during the qualification flow.
     send_dm(sender_id, msg)
 
 
 def handle_objection(sender_id: str, state: Dict[str, Any], text: str, objection_type: str):
     if not state.get("latest_audit"):
-        send_dm(
-            sender_id,
-            "Good question 🙂\n\nThe audit is free. First I’ll review the profile, then the next step can be suggested properly.\n\nSend GROWTH to start.",
-            ["GROWTH"]
-        )
+        send_dm(sender_id, "Good question ðŸ™‚\n\nThe audit is free. First Iâ€™ll review the profile, then the next step can be suggested properly.\n\nSend GROWTH to start.", ["GROWTH"])
         return
     state["objection_type"] = objection_type
     state["lead_temperature"] = "hot"
     if objection_type in ["thinking_delay", "not_now"]:
         state["lead_temperature"] = "warm"
         STORE.save_state(sender_id, state)
-        send_dm(sender_id, "No issue 🙂\n\nKeep the audit as your starting point.\n\nWhen you want ClientBoost to map the fix properly, reply FIX THIS.")
+        send_dm(sender_id, "No issue ðŸ™‚\n\nKeep the audit as your starting point.\n\nWhen you want ClientBoost to map the fix properly, reply FIX THIS.", ["FIX THIS", "VIEW AUDIT"])
         return
+    if objection_type == "price_question":
+        msg = price_message(state)
+    elif objection_type == "asks_details":
+        msg = details_message(state)
+    elif objection_type == "asks_results":
+        msg = results_message(state)
+    elif objection_type == "trust_issue":
+        msg = "Fair question âœ…\n\nThe audit is based on your visible profile screenshot, and the next step is only suggested after your goal is clear.\n\nWhat result matters most to you right now?"
+    else:
+        msg = build_ai_conversion_message(state, text, "objection")
     state["step"] = "conversion_goal"
     STORE.save_state(sender_id, state)
-    msg = build_ai_conversion_message(state, text, "objection")
     send_dm(sender_id, msg)
+
+
+def price_message(state: Dict[str, Any]) -> str:
+    if profile_is_creator_monetization(state):
+        return (
+            "Cost depends on the starting scope âœ…\n\n"
+            "For this type of page, the usual options are:\n"
+            "â€¢ Profile + bio/highlight fix\n"
+            "â€¢ Content direction + first 9-post plan\n"
+            "â€¢ Full growth + monetization setup\n\n"
+            "A senior strategist will quote the right option after reviewing your audit. What result matters most first?"
+        )
+    return (
+        "Cost depends on the scope âœ…\n\n"
+        "Usually it starts from one of these:\n"
+        "â€¢ Profile fix\n"
+        "â€¢ Growth setup\n"
+        "â€¢ Full content + lead system\n\n"
+        "Before pricing, what result matters most â€” enquiries, sales, bookings, trust, or followers?"
+    )
+
+
+def details_message(state: Dict[str, Any]) -> str:
+    if profile_is_creator_monetization(state):
+        return (
+            "For this page, ClientBoost would mainly fix 4 things ðŸ§©\n\n"
+            "â€¢ Follow reason\n"
+            "â€¢ Content series\n"
+            "â€¢ Proof/trust posts\n"
+            "â€¢ Monetization path: collabs, promos, resources, or traffic\n\n"
+            "Which result do you want first?"
+        )
+    return (
+        "The fix usually covers 4 things ðŸ§©\n\n"
+        "â€¢ Profile positioning\n"
+            "â€¢ Bio, highlights, and CTA\n"
+        "â€¢ Content direction\n"
+        "â€¢ Trust + enquiry path\n\n"
+        "What result do you want first?"
+    )
+
+
+def results_message(state: Dict[str, Any]) -> str:
+    return (
+        "Results depend on the profile, niche, consistency, and offer âœ…\n\n"
+        "The first goal is to make the profile clearer, more trusted, and easier to act on.\n\n"
+        "Then growth becomes easier because the content has direction. What result matters most to you?"
+    )
 
 
 def handle_contact(sender_id: str, state: Dict[str, Any], text: str):
     contact, ctype = contact_from_text(text)
     if not contact:
-        send_dm(sender_id, "Send your best contact detail — WhatsApp number or email 🙂")
+        send_dm(sender_id, "Send your best contact detail â€” WhatsApp number or email ðŸ™‚")
         return
     state["contact_info"] = contact
     state["contact_type"] = ctype or "contact"
@@ -1818,30 +2124,58 @@ def handle_contact(sender_id: str, state: Dict[str, Any], text: str):
     send_dm(sender_id, msg_senior_review())
 
 
+def handle_post_handover_message(sender_id: str, state: Dict[str, Any], text: str):
+    intent = direct_intent(text)
+    if intent == "owner_reset":
+        STORE.reset_state(sender_id)
+        send_dm(sender_id, "Owner reset complete âœ…\n\nSend GROWTH to test from the beginning.", ["GROWTH"])
+        return
+    if intent == "request_latest":
+        handle_latest(sender_id, state)
+        return
+    if intent == "request_preview":
+        handle_preview(sender_id, state)
+        return
+    if intent == "price_question":
+        send_dm(sender_id, price_message(state))
+        return
+    if intent == "asks_details":
+        send_dm(sender_id, details_message(state))
+        return
+    if intent == "asks_results":
+        send_dm(sender_id, results_message(state))
+        return
+    if intent == "trust_issue":
+        send_dm(sender_id, "Your details are saved âœ…\n\nA senior ClientBoost strategist will continue from the audit and preview, so they can suggest the right plan properly.")
+        return
+    # Stay mostly silent after handover so a human can own the chat.
+    return
+
+
 def handle_unclear(sender_id: str, state: Dict[str, Any]):
     step = state.get("step", "new")
     if step == "follow_gate":
-        send_dm(sender_id, "Choose one option 🙂", ["I FOLLOWED", "WHY FOLLOW", "CANCEL"])
+        send_dm(sender_id, "Choose one option ðŸ™‚", ["I FOLLOWED", "WHY FOLLOW", "CANCEL"])
     elif step == "ask_profile_name":
-        send_dm(sender_id, "What name should I use for the profile or brand? 🙂")
+        send_dm(sender_id, "What name should I use for the profile or brand? ðŸ™‚")
     elif step == "ask_profile_type":
-        send_dm(sender_id, "What is this profile about? 🙂")
+        send_dm(sender_id, "What is this profile about? ðŸ™‚")
     elif step == "ask_goal_or_audience":
-        send_dm(sender_id, "What do you want from this profile — followers, customers, bookings, sales, trust, or brand deals? 🎯")
+        send_dm(sender_id, "What do you want from this profile â€” followers, customers, bookings, sales, trust, brand deals, or money? ðŸŽ¯")
     elif step == "ask_screenshot":
-        send_dm(sender_id, "Send one screenshot of the Instagram profile 📸")
+        send_dm(sender_id, "Send one clear screenshot of the Instagram profile ðŸ“¸")
     elif step == "audit_sent":
-        send_dm(sender_id, "What would you like next? 🙂", ["SEE PREVIEW", "FIX THIS", "VIEW AUDIT"])
+        send_dm(sender_id, "What would you like next? ðŸ™‚", ["SEE PREVIEW", "FIX THIS", "VIEW AUDIT"])
     elif step == "preview_sent":
-        send_dm(sender_id, "What would you like next? 🙂", ["FIX THIS", "VIEW AUDIT"])
+        send_dm(sender_id, "What would you like next? ðŸ™‚", ["FIX THIS", "VIEW AUDIT"])
     elif step.startswith("conversion"):
         advance_conversion(sender_id, state, text="yes")
     elif step == "ask_contact":
-        send_dm(sender_id, "Send your best contact detail — WhatsApp number or email 🙂")
+        send_dm(sender_id, "Send your best contact detail â€” WhatsApp number or email ðŸ™‚")
     elif step == "senior_review":
         return
     else:
-        send_dm(sender_id, "Send GROWTH to start your free Instagram audit 🚀", ["GROWTH"])
+        send_dm(sender_id, "Send GROWTH to start your free Instagram audit ðŸš€", ["GROWTH"])
 
 # ============================================================
 # MAIN MESSAGE ROUTER
@@ -1858,14 +2192,15 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
 
     state = STORE.get_state(sender_id)
 
-    # Owner reset always works, even after senior review.
     if text == OWNER_RESET_CODE:
         STORE.reset_state(sender_id)
-        send_dm(sender_id, "Owner reset complete ✅\n\nSend GROWTH to test from the beginning.", ["GROWTH"])
+        send_dm(sender_id, "Owner reset complete âœ…\n\nSend GROWTH to test from the beginning.", ["GROWTH"])
         return
 
-    # After senior review, automation stays silent so a human/senior strategist can own the chat.
+    # After senior review, answer only useful questions like price/details/latest/preview, otherwise stay silent.
     if state.get("step") == "senior_review" or str(state.get("handover", "false")).lower() == "true":
+        if text:
+            handle_post_handover_message(sender_id, state, text)
         return
 
     last_active = parse_iso(state.get("last_active", ""))
@@ -1874,15 +2209,14 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
             state["step"] = "new"
             STORE.save_state(sender_id, state)
 
-    # Screenshot handling.
     if image_url:
         if state.get("step") == "ask_screenshot":
             handle_screenshot(sender_id, state, image_url)
         else:
             if state.get("latest_audit"):
-                send_dm(sender_id, "I received the image 📸\n\nI already have your recent audit here. What would you like next?", ["SEE PREVIEW", "FIX THIS", "VIEW AUDIT"])
+                send_dm(sender_id, "I received the image ðŸ“¸\n\nI already have your recent audit here. What would you like next?", ["SEE PREVIEW", "FIX THIS", "VIEW AUDIT"])
             else:
-                send_dm(sender_id, "I received the image 📸\n\nFirst send GROWTH so I can review it in the right order.", ["GROWTH"])
+                send_dm(sender_id, "I received the image ðŸ“¸\n\nFirst send GROWTH so I can review it in the right order.", ["GROWTH"])
         return
 
     if not text:
@@ -1893,10 +2227,11 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
     t_norm = normalize(text)
     pre_intent = direct_intent(text)
 
-    # In these steps, the user's message is usually an answer, not an objection/command.
-    priority_commands = {"cancel", "reset", "restart"}
+    priority_commands = {"cancel", "reset", "restart", "don't", "dont"}
     if t_norm in priority_commands:
         intent = pre_intent
+    elif step == "follow_gate" and pre_intent == "generic_done":
+        intent = "follow_confirmed"
     elif step == "ask_profile_name":
         intent = "answer_profile_name"
     elif step == "ask_profile_type":
@@ -1948,10 +2283,9 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
         else:
             intent = "unclear"
 
-    # Route intent.
     if intent == "owner_reset":
         STORE.reset_state(sender_id)
-        send_dm(sender_id, "Owner reset complete ✅\n\nSend GROWTH to test from the beginning.", ["GROWTH"])
+        send_dm(sender_id, "Owner reset complete âœ…\n\nSend GROWTH to test from the beginning.", ["GROWTH"])
     elif intent == "start_audit":
         handle_start(sender_id, state)
     elif intent == "follow_confirmed" or (intent == "generic_done" and step == "follow_gate"):
@@ -1961,11 +2295,11 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
     elif intent == "cancel":
         state["step"] = "new"
         STORE.save_state(sender_id, state)
-        send_dm(sender_id, "Cancelled ✅\n\nSend GROWTH whenever you are ready.", ["GROWTH"])
+        send_dm(sender_id, "Cancelled âœ…\n\nSend GROWTH whenever you are ready.", ["GROWTH"])
     elif intent == "soft_reset":
         state["step"] = "new"
         STORE.save_state(sender_id, state)
-        send_dm(sender_id, "No problem ✅\n\nSend GROWTH whenever you are ready.", ["GROWTH"])
+        send_dm(sender_id, "No problem âœ…\n\nSend GROWTH whenever you are ready.", ["GROWTH"])
     elif intent == "answer_profile_name":
         handle_profile_name(sender_id, state, text)
     elif intent == "answer_profile_type":
@@ -1986,30 +2320,16 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
         else:
             send_dm(sender_id, reason, ["VIEW AUDIT", "SEE PREVIEW", "FIX THIS"])
     elif intent == "request_help":
-        if not state.get("latest_audit"):
-            send_dm(
-                sender_id,
-                "I can help with that 🙂\n\nFirst I need to audit the profile so the advice is specific, not generic.\n\nSend GROWTH to start the free audit.",
-                ["GROWTH"]
-            )
-        else:
-            start_conversion(sender_id, state, text)
+        start_conversion(sender_id, state, text)
     elif intent in OBJECTION_INTENTS:
-        if not state.get("latest_audit"):
-            send_dm(
-                sender_id,
-                "Good question 🙂\n\nThe audit is free. First I’ll review the profile, then the next step can be suggested properly.\n\nSend GROWTH to start.",
-                ["GROWTH"]
-            )
-        else:
-            handle_objection(sender_id, state, text, intent)
+        handle_objection(sender_id, state, text, intent)
     elif intent == "yes":
         if step in ["audit_sent", "preview_sent"]:
             start_conversion(sender_id, state, text)
         elif step in ["conversion_pain", "conversion_reframe", "conversion_solution"]:
             advance_conversion(sender_id, state, text)
         elif step == "ask_contact":
-            send_dm(sender_id, "Send your best contact detail — WhatsApp number or email 🙂")
+            send_dm(sender_id, "Send your best contact detail â€” WhatsApp number or email ðŸ™‚")
         else:
             handle_unclear(sender_id, state)
     elif intent == "answer_goal":
@@ -2019,7 +2339,6 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
     elif intent == "answer_scope":
         advance_conversion(sender_id, state, text, "ask_contact")
     elif intent == "contact_sent":
-        # Safety: save contact only at the contact step. If sent early, continue conversion first.
         if step == "ask_contact":
             handle_contact(sender_id, state, text)
         elif step in ["audit_sent", "preview_sent"]:
@@ -2039,12 +2358,12 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
 # ============================================================
 @app.route("/", methods=["GET"])
 def home():
-    return "ClientBoost Bot is running", 200
+    return f"ClientBoost Bot is running â€” {APP_VERSION}", 200
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "clientboost-bot"}), 200
+    return jsonify({"status": "ok", "service": "clientboost-bot", "version": APP_VERSION}), 200
 
 
 @app.route("/preview/<filename>", methods=["GET"])

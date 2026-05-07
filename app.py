@@ -17,7 +17,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
 from PIL import Image, ImageDraw, ImageFont
 
 try:
@@ -33,7 +33,7 @@ except Exception:
     Credentials = None
 
 app = Flask(__name__)
-APP_VERSION = "clientboost-final-specific-v3-2026-05-07"
+APP_VERSION = "clientboost-final-specific-v4-2026-05-07"
 
 # ============================================================
 # ENVIRONMENT
@@ -65,6 +65,8 @@ FOLLOW_VERIFY_MODE = os.environ.get("FOLLOW_VERIFY_MODE", "soft").strip().lower(
 if FOLLOW_VERIFY_MODE not in {"soft", "strict", "off"}:
     FOLLOW_VERIFY_MODE = "soft"
 FOLLOW_CACHE_HOURS = env_int("FOLLOW_CACHE_HOURS", 24)
+# If true, the bot re-checks follow status during the flow and pauses if the user unfollows.
+FOLLOW_ENFORCE_DURING_CHAT = env_bool("FOLLOW_ENFORCE_DURING_CHAT", True)
 
 AUDIT_COOLDOWN_DAYS = env_int("AUDIT_COOLDOWN_DAYS", 7)
 SESSION_EXPIRY_DAYS = env_int("SESSION_EXPIRY_DAYS", 3)
@@ -399,8 +401,32 @@ def safe_username(value: str) -> str:
     return cleaned[:24] or "yourprofile"
 
 
+def repair_mojibake(text: str) -> str:
+    """Repair common UTF-8 text that was accidentally decoded as latin-1/cp1252.
+
+    This fixes messages like "Great Ã°Å¸â€˜â€¹" back to "Great ðŸ‘‹" and
+    "IÃ¢â‚¬â„¢ll" back to "Iâ€™ll" before sending to Instagram.
+    """
+    if not text:
+        return text
+    markers = ("Ãƒ", "Ã‚", "Ã¢", "Ã°Å¸", "Ã¢Å“", "Ã¢â‚¬", "Ã°Å¸")
+    fixed = text
+    for _ in range(2):
+        if not any(m in fixed for m in markers):
+            break
+        try:
+            candidate = fixed.encode("latin1", errors="strict").decode("utf-8", errors="strict")
+        except Exception:
+            break
+        if candidate and candidate != fixed:
+            fixed = candidate
+        else:
+            break
+    return fixed
+
+
 def clean_dm_text(text: str, limit: int = MAX_DM_CHARS) -> str:
-    text = (text or "").replace("```", "").strip()
+    text = repair_mojibake((text or "").replace("```", "").strip())
     text = re.sub(r"\n{3,}", "\n\n", text)
     blocked_patterns = [
         r"\bbackend\b", r"\bautomation\b", r"\bAI model\b", r"\bGemini\b",
@@ -873,6 +899,58 @@ def is_follow_verified(sender_id: str, state: Dict[str, Any], force: bool = Fals
     state["follow_verified"] = "false"
     STORE.save_state(sender_id, state)
     return False
+
+
+def current_follow_status(sender_id: str, state: Dict[str, Any]) -> Optional[bool]:
+    """Return True/False only when Meta clearly reports follow status.
+
+    None means the API did not return a usable follow field, so the bot should
+    not punish the user for a temporary API limitation.
+    """
+    if not FOLLOW_REQUIRED or FOLLOW_VERIFY_MODE == "off":
+        return True
+    profile = get_instagram_profile(sender_id)
+    if not profile:
+        return None
+    username = profile.get("username", "")
+    if username:
+        state["instagram_username"] = username
+    if profile.get("is_user_follow_business") is True:
+        state["follow_verified"] = "true"
+        state["follow_verified_at"] = now_iso()
+        STORE.save_state(sender_id, state)
+        return True
+    if profile.get("is_user_follow_business") is False:
+        state["follow_verified"] = "false"
+        STORE.save_state(sender_id, state)
+        return False
+    return None
+
+
+def enforce_follow_during_chat(sender_id: str, state: Dict[str, Any], text: str = "") -> bool:
+    """Pause the flow if the user unfollows after starting.
+
+    Soft mode still lets people start if Meta cannot confirm instantly, but this
+    function catches a clear unfollow signal during the conversation.
+    """
+    if not (FOLLOW_REQUIRED and FOLLOW_ENFORCE_DURING_CHAT) or FOLLOW_VERIFY_MODE == "off":
+        return True
+    step = state.get("step", "new")
+    intent = direct_intent(text or "") if text else None
+    allowed_intents = {"owner_reset", "ask_why_follow", "cancel", "soft_reset", "follow_confirmed", "generic_done"}
+    if step in {"new", "follow_gate"} or intent in allowed_intents:
+        return True
+    status = current_follow_status(sender_id, state)
+    if status is False:
+        state["step"] = "follow_gate"
+        STORE.save_state(sender_id, state)
+        send_dm(
+            sender_id,
+            f"Please follow @{FOLLOW_ACCOUNT_USERNAME} to continue the free audit ðŸ™‚\n\nOnce done, tap I FOLLOWED.",
+            ["I FOLLOWED", "WHY FOLLOW", "CANCEL"]
+        )
+        return False
+    return True
 
 # ============================================================
 # GEMINI
@@ -2197,6 +2275,9 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
         send_dm(sender_id, "Owner reset complete âœ…\n\nSend GROWTH to test from the beginning.", ["GROWTH"])
         return
 
+    if not enforce_follow_during_chat(sender_id, state, text):
+        return
+
     # After senior review, answer only useful questions like price/details/latest/preview, otherwise stay silent.
     if state.get("step") == "senior_review" or str(state.get("handover", "false")).lower() == "true":
         if text:
@@ -2358,7 +2439,7 @@ def handle_message(sender_id: str, message_obj: Dict[str, Any]):
 # ============================================================
 @app.route("/", methods=["GET"])
 def home():
-    return f"ClientBoost Bot is running â€” {APP_VERSION}", 200
+    return Response(f"ClientBoost Bot is running â€” {APP_VERSION}", content_type="text/plain; charset=utf-8"), 200
 
 
 @app.route("/health", methods=["GET"])
